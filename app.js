@@ -131,6 +131,93 @@ function formatDuration(seconds){
   parts.push(`${ss}s`);
   return parts.join(' ');
 }
+
+// Extract a list of [lat, lon] pairs from a GeoJSON object. Supports
+// FeatureCollection, Feature, LineString, MultiLineString, Polygon,
+// MultiPolygon and Point types. Coordinates in GeoJSON are stored in
+// longitude, latitude order; this function flips them back to
+// [lat, lon].  If no coordinates can be extracted, an empty array is
+// returned.
+function extractCoordsFromGeoJSON(gj){
+  const out=[];
+  function walk(obj){
+    if(!obj) return;
+    const type=obj.type;
+    if(type==='FeatureCollection'){
+      (obj.features||[]).forEach(f=>walk(f));
+    } else if(type==='Feature'){
+      walk(obj.geometry);
+    } else if(type==='LineString'){
+      (obj.coordinates||[]).forEach(c=>{ if(Array.isArray(c)&&c.length>=2) out.push([c[1],c[0]]); });
+    } else if(type==='MultiLineString'){
+      (obj.coordinates||[]).forEach(ls=>{ (ls||[]).forEach(c=>{ if(Array.isArray(c)&&c.length>=2) out.push([c[1],c[0]]); }); });
+    } else if(type==='Polygon'){
+      // Use the first ring of the polygon
+      const rings=obj.coordinates||[];
+      if(rings.length>0) rings[0].forEach(c=>{ if(Array.isArray(c)&&c.length>=2) out.push([c[1],c[0]]); });
+    } else if(type==='MultiPolygon'){
+      (obj.coordinates||[]).forEach(poly=>{ if(poly&&poly.length>0) poly[0].forEach(c=>{ if(Array.isArray(c)&&c.length>=2) out.push([c[1],c[0]]); }); });
+    } else if(type==='Point'){
+      const c=obj.coordinates||[];
+      if(c.length>=2) out.push([c[1],c[0]]);
+    }
+  }
+  walk(gj);
+  return out;
+}
+
+// Parse a GPX file (XML) and return an array of [lat, lon] points.  The
+// parser extracts track points (<trkpt>), route points (<rtept>) and
+// waypoints (<wpt>) in the order they appear in the file.  If the file
+// contains multiple tracks or segments they are concatenated.
+function parseGpx(text){
+  const parser=new DOMParser();
+  let doc;
+  try{ doc=parser.parseFromString(text,'application/xml'); }catch(e){ return []; }
+  const pts=[];
+  // Extract track points
+  doc.querySelectorAll('trkpt').forEach(pt=>{
+    const lat=parseFloat(pt.getAttribute('lat')), lon=parseFloat(pt.getAttribute('lon'));
+    if(Number.isFinite(lat)&&Number.isFinite(lon)) pts.push([lat,lon]);
+  });
+  // Extract route points if no track points found
+  if(!pts.length){
+    doc.querySelectorAll('rtept').forEach(pt=>{
+      const lat=parseFloat(pt.getAttribute('lat')), lon=parseFloat(pt.getAttribute('lon'));
+      if(Number.isFinite(lat)&&Number.isFinite(lon)) pts.push([lat,lon]);
+    });
+  }
+  // Extract waypoints if no track/route points
+  if(!pts.length){
+    doc.querySelectorAll('wpt').forEach(pt=>{
+      const lat=parseFloat(pt.getAttribute('lat')), lon=parseFloat(pt.getAttribute('lon'));
+      if(Number.isFinite(lat)&&Number.isFinite(lon)) pts.push([lat,lon]);
+    });
+  }
+  return pts;
+}
+
+// Parse a KML file (XML) and return an array of [lat, lon] points.  Only
+// <coordinates> elements inside Point or LineString geometries are
+// considered.  Coordinates in KML are in lon,lat[,alt] order and may
+// contain multiple coordinate tuples separated by whitespace.
+function parseKml(text){
+  const parser=new DOMParser();
+  let doc;
+  try{ doc=parser.parseFromString(text,'application/xml'); }catch(e){ return []; }
+  const pts=[];
+  doc.querySelectorAll('LineString coordinates, Point coordinates').forEach(el=>{
+    const coordsString=(el.textContent||'').trim();
+    coordsString.split(/\s+/).forEach(pair=>{
+      const parts=pair.split(',');
+      if(parts.length>=2){
+        const lon=parseFloat(parts[0]), lat=parseFloat(parts[1]);
+        if(Number.isFinite(lat)&&Number.isFinite(lon)) pts.push([lat,lon]);
+      }
+    });
+  });
+  return pts;
+}
 function interp1(xs,ys,x){
   if(!xs?.length||!ys?.length)return 0;
   if(x<=xs[0])return ys[0];
@@ -1185,6 +1272,75 @@ $('clear').onclick=()=>{if(confirm('Tøm?')){marks=[];active=0;line={pin:null,bo
 $('useHere').onclick=()=>{if(!pos)return alert('Start GPS eller demo først');marks.push({name:`Merke ${marks.length+1}`,lat:pos.lat,lon:pos.lon,type:'merke'});resetBoatNav();save();render();update();};
 $('setPin').onclick=()=>{if(!pos)return alert('Start GPS eller demo først');line.pin={lat:pos.lat,lon:pos.lon};save();render();};
 $('setBoat').onclick=()=>{if(!pos)return alert('Start GPS eller demo først');line.boat={lat:pos.lat,lon:pos.lon};save();render();};
+// When the user selects a course file (GPX, KML, GeoJSON), parse it and
+// populate the marks array. The first coordinate becomes the start, the
+// last becomes the finish (mål) and the intermediate points are marked as
+// rundingsbøyer. After importing, the existing course is cleared and the
+// boat start position is updated to the imported start.  The file is read
+// entirely on the client and is never uploaded to any server.
+const importInput = typeof document !== 'undefined' ? document.getElementById('importFile') : null;
+// Only attach the import handler if the input element exists and supports
+// addEventListener.  In unit tests run under Node there is no real DOM
+// element, so we avoid accessing undefined methods.
+if(importInput && typeof importInput.addEventListener === 'function'){
+  importInput.addEventListener('change', async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if(!file) return;
+    try{
+      const text = await file.text();
+      const ext = (file.name.split('.').pop()||'').toLowerCase();
+      let coords = [];
+      if(ext === 'geojson' || ext === 'json'){
+        let gj;
+        try{ gj = JSON.parse(text); }catch(err){ alert('Kunne ikke lese JSON-filen'); return; }
+        coords = extractCoordsFromGeoJSON(gj);
+      } else if(ext === 'gpx'){
+        coords = parseGpx(text);
+      } else if(ext === 'kml'){
+        coords = parseKml(text);
+      } else {
+        alert('Ukjent filtype. Støttede formater: .gpx, .kml, .geojson, .json');
+        return;
+      }
+      if(!Array.isArray(coords) || coords.length < 2){
+        alert('Fant ikke nok koordinater i filen');
+        return;
+      }
+      // Clear current course and start fresh
+      marks = [];
+      active = 0;
+      line = { pin: null, boat: null };
+      resetBoatNav();
+      // Set boat start at the first coordinate. Use nearest water to avoid
+      // immediate relocation when the simulation runs.
+      const [sLat, sLon] = coords[0];
+      const w = nearestWater(sLat, sLon);
+      pos = { lat: w.lat, lon: w.lon, sog: ms(+$('simSpeed').value||5.5), cog: +$('simHeading').value||210 };
+      // Add imported points to marks array. Assign types and names.
+      coords.forEach((ll, idx) => {
+        const [lat, lon] = ll;
+        let type;
+        let name;
+        if(idx === 0){ type = 'start'; name = 'Start'; }
+        else if(idx === coords.length - 1){ type = 'mål'; name = 'Mål'; }
+        else { type = 'runding'; name = `Bøye ${marks.filter(m => m.type === 'runding').length + 1}`; }
+        marks.push({ name, lat, lon, type });
+      });
+      active = marks.length > 1 ? 1 : 0;
+      // Persist and redraw
+      save();
+      render();
+      update();
+      alert('Bane importert. Start, rundinger og mål er satt.');
+    } catch(err){
+      console.error('Import error:', err);
+      alert('En feil oppstod ved import av bane.');
+    } finally {
+      // Reset the input so the same file can be selected again
+      e.target.value = '';
+    }
+  });
+}
 if($('polarMode')){
   $('polarMode').value=currentPolarMode();
   $('polarMode').onchange=()=>{

@@ -98,6 +98,17 @@
       <label>Polar<select id="polarMode"><option value="orc">ORC</option><option value="doublehanded">Double handed</option><option value="nonspin">Non-spin</option></select></label>
     </div>
   </section>
+
+  <!-- Panel for importing ready‑made courses from external files.  Users can select a
+       GPX, KML or GeoJSON file and the coordinates will be added as start,
+       rundingsbøyer and mål in the current course.  Files are processed locally
+       without sending them to a server. -->
+  <section class="panel">
+    <h3>Importer bane</h3>
+    <input id="importFile" type="file" accept=".geojson,.json,.gpx,.kml" />
+    <p class="muted">Velg en GPX, KML eller GeoJSON‑fil for å importere ruten. Den første koordinaten blir
+      startpunkt, siste blir mål, og punktene imellom blir rundingsbøyer.</p>
+  </section>
 </main>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="app.js?v=2026-05-30-v3"></script>

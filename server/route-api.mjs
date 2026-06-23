@@ -43,9 +43,15 @@ async function fetchJson(url, timeoutMs=7000) {
 function splitNums(s) {
   return String(s||'').split(',').map(Number).filter(Number.isFinite);
 }
+// Reduce the time-to-live for weather and marine data so that the app
+// can refresh wind and wave information more frequently. Previously the
+// TTL was set to 2 minutes. We lower it to one minute to allow for
+// faster updates without hammering the Open‑Meteo API excessively.
+const WEATHER_TTL_MS = 60 * 1000;
+
 async function getWeather(lat, lon) {
   const key = `w:${lat.toFixed(3)},${lon.toFixed(3)}`;
-  return cached(key, 2*60*1000, async () => {
+  return cached(key, WEATHER_TTL_MS, async () => {
     // Use model=best_match to instruct Open‑Meteo to select the most
     // suitable high‑resolution model for the given location. This improves
     // forecast fidelity in regions where high‑resolution models are available.
@@ -57,7 +63,7 @@ async function getWeather(lat, lon) {
 }
 async function getWeatherGrid(lats, lons) {
   const key = `g:${lats.map(n=>n.toFixed(3)).join(',')}:${lons.map(n=>n.toFixed(3)).join(',')}`;
-  return cached(key, 2*60*1000, async () => {
+  return cached(key, WEATHER_TTL_MS, async () => {
     const latStr = lats.map(n=>n.toFixed(5)).join(',');
     const lonStr = lons.map(n=>n.toFixed(5)).join(',');
     // Request high‑resolution model selection for each coordinate pair using
