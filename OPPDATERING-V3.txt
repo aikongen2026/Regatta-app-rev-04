@@ -1,0 +1,18 @@
+Regatta App v3 – enkel oppdatering
+
+Hva er nytt:
+- Vær, strøm og bølger hentes via Render-backend.
+- Kartet oppdaterer vær/havdata når du flytter kartet.
+- Rød stiplet anbefalt kurs bruker serverens sjørute rundt land.
+- Vectorfelt på kartet bruker backend-cache.
+- Beholder demo, GPS, PWA og eksisterende Render-oppsett.
+
+Slik oppdaterer du:
+1. Pakk ut ZIP-filen.
+2. Åpne GitHub-repoet: https://github.com/StrayeAI/regatta-assistent-render
+3. Trykk Add file → Upload files.
+4. Dra inn ALLE filene fra den utpakkede mappen.
+5. Trykk Commit changes.
+6. Gå til Render → regatta-app.
+7. Trykk Manual Deploy → Deploy latest commit.
+8. Vent til loggen viser "Your service is live".
