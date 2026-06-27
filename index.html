@@ -8,12 +8,12 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="Regatta">
   <!-- Preserve manifest and icons exactly as in the original minified file -->
-  <link rel="manifest" href="manifest.webmanifest?v=2026-06-24-v11-navionics-auto-download">
+  <link rel="manifest" href="manifest.webmanifest?v=2026-06-24-v12-tactical-chart">
   <link rel="icon" href="icon-192.png">
   <link rel="apple-touch-icon" href="icon-192.png">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <title>Never 2 late Regatta v3</title>
-  <link rel="stylesheet" href="style.css?v=2026-06-24-v11-navionics-auto-download">
+  <link rel="stylesheet" href="style.css?v=2026-06-24-v12-tactical-chart">
 </head>
 <body>
 <header>
@@ -35,6 +35,8 @@
         <option value="satellite">Satellitt</option>
         <option value="hybrid">Hybrid</option>
         <option value="marine">Marin</option>
+        <option value="marine_depths">Marin + dybder</option>
+        <option value="no_chart">Norsk sjøkart</option>
         <option value="topo">Topografisk</option>
       </select>
     </label>
@@ -72,6 +74,17 @@
     <label>Live anbefaling</label>
     <h2 id="advice">Trykk/hold på kartet for start, mål og bøyer.</h2>
     <p id="details"></p>
+  </section>
+  <section class="panel tactical-panel">
+    <h3>Taktisk navigasjon</h3>
+    <div class="tactical-grid">
+      <div><label>Planstatus</label><b id="tacticalLockStatus">–</b></div>
+      <div><label>Neste kommando</label><b id="tacticalNext">–</b></div>
+      <div><label>Avvik rute</label><b id="tacticalOffRoute">–</b></div>
+      <div><label>Data</label><b id="tacticalDataStatus">–</b></div>
+      <div><label>Kart</label><b id="tacticalMarineStatus">–</b></div>
+    </div>
+    <p class="muted">Rød taktisk rute er stabilisert for navigasjon. Den oppdateres når vær/strøm, aktivt merke eller tydelig ruteavvik tilsier at en ny plan er bedre. Bruk «Oppdater taktisk rute» ved behov.</p>
   </section>
   <!-- New panel for time difference between recommended and actual course. -->
   <section class="panel" id="timediffPanel">
@@ -153,6 +166,6 @@
   </section>
 </main>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="app.js?v=2026-06-24-v11-navionics-auto-download"></script>
+<script src="app.js?v=2026-06-24-v12-tactical-chart"></script>
 </body>
 </html>

@@ -1,0 +1,8 @@
+V12 - Robust taktisk kart
+- Nytt taktisk navigasjonspanel med planstatus, neste kommando, avvik fra rød rute, dataalder og kartstatus.
+- Stabil rød taktisk rute er beholdt/forsterket: SLÅ/GYB-punkter oppdateres ikke ved små GPS-hopp.
+- Replan ved større vær/strøm-endring, aktivt merke, polarvalg eller tydelig avvik fra ruten over tid.
+- Nye kartvalg:
+  * Marin + dybder: OpenStreetMap + OpenSeaMap + Kartverket dybdekurver.
+  * Norsk sjøkart: Kartverkets raster sjøkart-WMS + OpenSeaMap seamarks.
+- Cache-versjon oppdatert til v12.

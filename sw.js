@@ -1,10 +1,10 @@
-const CACHE = 'regatta-pwa-2026-06-24-v11-navionics-auto-download';
+const CACHE = 'regatta-pwa-2026-06-24-v12-tactical-chart';
 const ASSETS = [
   './',
   './index.html',
-  './app.js?v=2026-06-24-v11-navionics-auto-download',
-  './style.css?v=2026-06-24-v11-navionics-auto-download',
-  './manifest.webmanifest?v=2026-06-24-v11-navionics-auto-download',
+  './app.js?v=2026-06-24-v12-tactical-chart',
+  './style.css?v=2026-06-24-v12-tactical-chart',
+  './manifest.webmanifest?v=2026-06-24-v12-tactical-chart',
   './icon-192.png',
   './icon-512.png'
 ];

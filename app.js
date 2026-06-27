@@ -15,7 +15,7 @@ let lastTacticalPlan = {turns: [], mode: 'direct', next: null};
 let tacticalRouteLock = { key: '', route: null, turns: [], mode: 'direct', nextIdx: 1, createdAt: 0, pending: false };
 let boatNav = { active: null, route: [], idx: 1, pending: false, source: 'client' };
 let recommendedNav = { key: '', route: null, pending: false, error: null, t: 0 };
-const APP_VERSION = '2026-06-24-v11-navionics-auto-download';
+const APP_VERSION = '2026-06-24-v12-tactical-chart';
 const SAME_ORIGIN_ROUTE_API = ['localhost','127.0.0.1'].includes(location.hostname) || !/github\.io$/i.test(location.hostname)
   ? location.origin
   : '';
@@ -106,6 +106,15 @@ const MAP_TYPES = {
     { url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', opts: { maxZoom: 20, attribution: '© OSM' } },
     { url: 'https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png', opts: { maxZoom: 18, attribution: '© OpenSeaMap' } }
   ],
+  marine_depths: [
+    { url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', opts: { maxZoom: 20, attribution: '© OSM' } },
+    { url: 'https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png', opts: { maxZoom: 18, attribution: '© OpenSeaMap' } },
+    { wms: true, url: 'https://wms.geonorge.no/skwms1/wms.dybdekurver_havomraader', opts: { layers: 'all', format: 'image/png', transparent: true, version: '1.3.0', opacity: .78, attribution: '© Kartverket dybdekurver' } }
+  ],
+  no_chart: [
+    { wms: true, url: 'https://wms.geonorge.no/skwms1/wms.sjokartraster2', opts: { layers: 'all', format: 'image/png', transparent: false, version: '1.3.0', opacity: 1, attribution: '© Kartverket sjøkart' } },
+    { url: 'https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png', opts: { maxZoom: 18, attribution: '© OpenSeaMap' } }
+  ],
   topo: [
     { url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', opts: { maxZoom: 17, attribution: '© OpenTopoMap' } }
   ]
@@ -115,7 +124,12 @@ function setMapType(type){
   currentMapLayers = [];
   const chosen = MAP_TYPES[type] || MAP_TYPES.standard;
   chosen.forEach(def => {
-    const layer = L.tileLayer(def.url, def.opts).addTo(map);
+    let layer;
+    if(def.wms && L.tileLayer?.wms){
+      layer = L.tileLayer.wms(def.url, def.opts).addTo(map);
+    } else {
+      layer = L.tileLayer(def.url, def.opts).addTo(map);
+    }
     currentMapLayers.push(layer);
   });
   localStorage.regattaMapType = type;
@@ -123,7 +137,7 @@ function setMapType(type){
 setMapType(localStorage.regattaMapType || 'standard');
 if($('mapType')){
   $('mapType').value = localStorage.regattaMapType || 'standard';
-  $('mapType').onchange = e => setMapType(e.target.value);
+  $('mapType').onchange = e => { setMapType(e.target.value); updateTacticalPanel(tacticalRouteLock.route); };
 }
 
 function setStatus(text){$('status').textContent=`${text} · ${APP_VERSION.replace('2026-05-02-','')}`;}
@@ -1124,7 +1138,7 @@ function routeKeyForRecommendation(target, rec){
   // mark, polar setup or weather changes enough to matter tactically.
   const q=(v,step=1)=>Number.isFinite(v)?Math.round(v/step)*step:0;
   return [
-    'stable-v9',
+    'stable-v12',
     active, marks.length,
     target.lat.toFixed(5), target.lon.toFixed(5),
     currentPolarMode(),
@@ -1158,15 +1172,65 @@ function distancePointToRouteMeters(lat,lon,route){
   return best;
 }
 
+function formatAge(ms){
+  if(!Number.isFinite(ms)||ms<0)return '–';
+  const s=Math.round(ms/1000);
+  if(s<60)return `${s}s siden`;
+  const m=Math.round(s/60);
+  if(m<60)return `${m}m siden`;
+  return `${Math.round(m/60)}t siden`;
+}
+function updateTacticalPanel(route){
+  const lockEl=$('tacticalLockStatus');
+  const nextEl=$('tacticalNext');
+  const offEl=$('tacticalOffRoute');
+  const dataEl=$('tacticalDataStatus');
+  const chartEl=$('tacticalMarineStatus');
+  const activeMap=localStorage.regattaMapType || 'standard';
+  if(lockEl){
+    const locked=Array.isArray(tacticalRouteLock.route)&&tacticalRouteLock.route.length>1;
+    const age=locked?formatAge(Date.now()-(tacticalRouteLock.createdAt||Date.now())):'–';
+    lockEl.textContent=locked?`Låst plan · ${age}`:'Ingen låst plan';
+    lockEl.className=locked?'ok':'warn';
+  }
+  if(nextEl){
+    const next=route?.[1] || lastTacticalPlan.next;
+    if(pos&&next){
+      nextEl.textContent=`${Math.round(bearing(pos.lat,pos.lon,next[0],next[1]))}° · ${Math.round(distance(pos.lat,pos.lon,next[0],next[1]))} m`;
+    }else nextEl.textContent='–';
+  }
+  if(offEl){
+    const r=Array.isArray(tacticalRouteLock.route)?tacticalRouteLock.route:route;
+    const off=pos&&r?distancePointToRouteMeters(pos.lat,pos.lon,r):Infinity;
+    offEl.textContent=Number.isFinite(off)?`${Math.round(off)} m fra rød rute`:'–';
+    offEl.className=off<90?'ok':off<250?'warn':'dangerText';
+  }
+  if(dataEl){
+    const age=weather?.t?Date.now()-weather.t:(lastFetch?Date.now()-lastFetch:NaN);
+    dataEl.textContent=Number.isFinite(age)?`Vær/hav ${formatAge(age)}`:'Vær/hav –';
+    dataEl.className=Number.isFinite(age)&&age<180000?'ok':'warn';
+  }
+  if(chartEl){
+    chartEl.textContent=activeMap==='no_chart'
+      ? 'Kartverket sjøkart aktivt'
+      : activeMap==='marine_depths'
+        ? 'Marin + dybdekurver aktivt'
+        : activeMap==='marine'
+          ? 'Marin/seamarks aktivt'
+          : 'Tips: velg Norsk sjøkart eller Marin + dybder';
+    chartEl.className=(activeMap==='no_chart'||activeMap==='marine_depths')?'ok':'warn';
+  }
+}
+
 function routeNeedsReplan(key, lockedRoute){
   if(!Array.isArray(lockedRoute)||lockedRoute.length<2)return true;
   if(tacticalRouteLock.key!==key)return true;
   // Keep tack points stable. Replan due to off-route only if the boat is
   // clearly far away and the plan is not brand new; this avoids jitter while
   // still recovering if the sailor deliberately sails a very different line.
-  if(pos && Date.now()-(tacticalRouteLock.createdAt||0)>90000){
+  if(pos && Date.now()-(tacticalRouteLock.createdAt||0)>180000){
     const off=distancePointToRouteMeters(pos.lat,pos.lon,lockedRoute);
-    if(off>280)return true;
+    if(off>450)return true;
   }
   return false;
 }
@@ -1460,6 +1524,7 @@ function update(){
   if($('liveCourse')) $('liveCourse').textContent = Number.isFinite(pos.cog) ? `${Math.round(pos.cog)}°` : '–';
 
   const tacticalRoute=recommendedRouteTo(t);
+  updateTacticalPanel(tacticalRoute);
   const nextTactical=tacticalRoute?.[1];
   const nextBrg=nextTactical ? bearing(pos.lat,pos.lon,nextTactical[0],nextTactical[1]) : rec.course;
   const nextDst=nextTactical ? distance(pos.lat,pos.lon,nextTactical[0],nextTactical[1]) : 0;
@@ -1521,15 +1586,15 @@ async function fetchData(lat,lon){
       if(!r.ok) throw new Error(`Weather API HTTP ${r.status}`);
       const data=await r.json();
       if(!data.ok) throw new Error(data.error||'Weather API-feil');
-      weather={wind:data.wind, marine:data.marine, source:data.source||'server'};
+      weather={wind:data.wind, marine:data.marine, source:data.source||'server', t:data.t||Date.now()};
       setStatus('Live vær');
     } else {
-      weather=await fallback();
+      weather=await fallback(); weather.t=Date.now();
       setStatus('Live');
     }
   }catch(err){
     console.warn('Weather API failed, using fallback/demo',err);
-    try{ weather=await fallback(); setStatus('Live direkte'); }
+    try{ weather=await fallback(); weather.t=Date.now(); setStatus('Live direkte'); }
     catch{ simWeatherFallback();setStatus('Demo'); }
   }
   recommendedNav.key=''; // vær/strøm kan endre anbefalt rute
@@ -2103,6 +2168,7 @@ if(refreshTacticsBtn && typeof refreshTacticsBtn.addEventListener === 'function'
     tacticalRouteLock = { key: '', route: null, turns: [], mode: 'direct', nextIdx: 1, createdAt: 0, pending: false };
     recommendedNav = { key: '', route: null, pending: false, error: null, t: 0 };
     renderRecommended();
+    updateTacticalPanel(tacticalRouteLock.route);
     if(pos&&weather)update();
   });
 }

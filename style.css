@@ -345,3 +345,48 @@ header h1 small{font-size:.72em;color:#93c5fd;background:#0f2a44;border-radius:8
   opacity: .96;
   white-space: nowrap;
 }
+
+
+.tactical-panel {
+  border: 1px solid rgba(14,165,233,.28);
+  background: linear-gradient(180deg, rgba(30,41,59,.98), rgba(15,23,42,.98));
+}
+.tactical-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: .45rem;
+  margin: .4rem 0 .6rem;
+}
+.tactical-grid div {
+  background: rgba(15,23,42,.72);
+  border: 1px solid rgba(148,163,184,.16);
+  border-radius: .55rem;
+  padding: .55rem;
+  min-height: 52px;
+}
+.tactical-grid label {
+  display: block;
+  color: #93a4b7;
+  font-size: .68rem;
+  margin-bottom: .2rem;
+}
+.tactical-grid b {
+  display: block;
+  color: #f8fafc;
+  font-size: .88rem;
+  line-height: 1.15;
+}
+.tactical-grid .ok { color: #86efac; }
+.tactical-grid .warn { color: #fde68a; }
+.tactical-grid .dangerText { color: #fca5a5; }
+
+@media (max-width: 920px) {
+  .tactical-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 560px) {
+  .tactical-grid {
+    grid-template-columns: 1fr;
+  }
+}
