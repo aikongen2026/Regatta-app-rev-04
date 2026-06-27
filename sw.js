@@ -1,10 +1,10 @@
-const CACHE = 'regatta-pwa-2026-06-24-v12-tactical-chart';
+const CACHE = 'regatta-pwa-2026-06-24-v14-route-weather-field';
 const ASSETS = [
   './',
   './index.html',
-  './app.js?v=2026-06-24-v12-tactical-chart',
-  './style.css?v=2026-06-24-v12-tactical-chart',
-  './manifest.webmanifest?v=2026-06-24-v12-tactical-chart',
+  './app.js?v=2026-06-24-v14-route-weather-field',
+  './style.css?v=2026-06-24-v14-route-weather-field',
+  './manifest.webmanifest?v=2026-06-24-v14-route-weather-field',
   './icon-192.png',
   './icon-512.png'
 ];

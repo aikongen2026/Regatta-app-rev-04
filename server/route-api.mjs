@@ -43,6 +43,52 @@ async function fetchJson(url, timeoutMs=7000) {
 function splitNums(s) {
   return String(s||'').split(',').map(Number).filter(Number.isFinite);
 }
+
+function nearestHourlyCurrent(payload) {
+  const h = payload?.hourly;
+  if (!h || !Array.isArray(h.time) || !h.time.length) return payload?.current || {};
+  const now = Date.now();
+  let best = 0, bestDt = Infinity;
+  h.time.forEach((t, i) => {
+    const ms = Date.parse(t);
+    const dt = Number.isFinite(ms) ? Math.abs(ms - now) : Infinity;
+    if (dt < bestDt) { bestDt = dt; best = i; }
+  });
+  const out = { ...(payload.current || {}) };
+  for (const k of ['wind_speed_10m','wind_direction_10m','wind_gusts_10m','wave_height','wave_direction','wave_period','ocean_current_velocity','ocean_current_direction']) {
+    if (out[k] == null && Array.isArray(h[k])) out[k] = h[k][best];
+  }
+  return out;
+}
+function normalizeMarineCurrent(marine, units = {}) {
+  const out = { ...(marine || {}) };
+  const unit = String(units.ocean_current_velocity || '').toLowerCase();
+  if (Number.isFinite(out.ocean_current_velocity) && (unit.includes('km/h') || unit.includes('kmh'))) {
+    out.ocean_current_velocity = out.ocean_current_velocity / 3.6;
+  }
+  return out;
+}
+function metWindFromLocationforecast(met) {
+  const ts = met?.properties?.timeseries;
+  const d = Array.isArray(ts) && ts[0]?.data?.instant?.details;
+  if (!d) return {};
+  return {
+    wind_speed_10m: d.wind_speed,
+    wind_direction_10m: d.wind_from_direction,
+    wind_gusts_10m: d.wind_speed_of_gust
+  };
+}
+async function fetchMetWind(lat, lon) {
+  const url = `https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=${lat}&lon=${lon}`;
+  return fetchJson(url, 7000).then(metWindFromLocationforecast);
+}
+function mergeWind(primary, secondary) {
+  const out = { ...(primary || {}) };
+  for (const k of ['wind_speed_10m','wind_direction_10m','wind_gusts_10m']) {
+    if (!Number.isFinite(out[k]) && Number.isFinite(secondary?.[k])) out[k] = secondary[k];
+  }
+  return out;
+}
 // Reduce the time-to-live for weather and marine data so that the app
 // can refresh wind and wave information more frequently. Previously the
 // TTL was set to 2 minutes. We lower it to one minute to allow for
@@ -52,13 +98,17 @@ const WEATHER_TTL_MS = 60 * 1000;
 async function getWeather(lat, lon) {
   const key = `w:${lat.toFixed(3)},${lon.toFixed(3)}`;
   return cached(key, WEATHER_TTL_MS, async () => {
-    // Use model=best_match to instruct Open‑Meteo to select the most
-    // suitable high‑resolution model for the given location. This improves
-    // forecast fidelity in regions where high‑resolution models are available.
-    const wx = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=wind_speed_10m,wind_direction_10m,wind_gusts_10m&wind_speed_unit=ms&timezone=auto&model=best_match`;
-    const sea = `https://marine-api.open-meteo.com/v1/marine?latitude=${lat}&longitude=${lon}&current=ocean_current_velocity,ocean_current_direction,wave_height,wave_direction&timezone=auto&model=best_match`;
-    const [w, m] = await Promise.all([fetchJson(wx), fetchJson(sea)]);
-    return { ok:true, wind:w.current||{}, marine:m.current||{}, source:'open-meteo via render backend', t:Date.now() };
+    const wx = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=wind_speed_10m,wind_direction_10m,wind_gusts_10m&hourly=wind_speed_10m,wind_direction_10m,wind_gusts_10m&wind_speed_unit=ms&timezone=auto&forecast_days=1&model=best_match`;
+    const sea = `https://marine-api.open-meteo.com/v1/marine?latitude=${lat}&longitude=${lon}&current=ocean_current_velocity,ocean_current_direction,wave_height,wave_direction,wave_period&hourly=ocean_current_velocity,ocean_current_direction,wave_height,wave_direction,wave_period&timezone=auto&forecast_days=1&model=best_match`;
+    const [ow, om, met] = await Promise.allSettled([fetchJson(wx), fetchJson(sea), fetchMetWind(lat, lon)]);
+    const wPayload = ow.status === 'fulfilled' ? ow.value : {};
+    const mPayload = om.status === 'fulfilled' ? om.value : {};
+    const metWind = met.status === 'fulfilled' ? met.value : {};
+    const wind = mergeWind(nearestHourlyCurrent(wPayload), metWind);
+    const marine = normalizeMarineCurrent(nearestHourlyCurrent(mPayload), mPayload.current_units || mPayload.hourly_units || {});
+    if (!Object.keys(wind).length && !Object.keys(marine).length) throw new Error('No weather/marine data');
+    const source = met.status === 'fulfilled' ? 'open-meteo + met.no via render backend' : 'open-meteo via render backend';
+    return { ok:true, wind, marine, source, t:Date.now() };
   });
 }
 async function getWeatherGrid(lats, lons) {
@@ -66,15 +116,29 @@ async function getWeatherGrid(lats, lons) {
   return cached(key, WEATHER_TTL_MS, async () => {
     const latStr = lats.map(n=>n.toFixed(5)).join(',');
     const lonStr = lons.map(n=>n.toFixed(5)).join(',');
-    // Request high‑resolution model selection for each coordinate pair using
-    // model=best_match. This parameter tells Open‑Meteo to automatically pick
-    // the most suitable model for the given latitude and longitude string lists.
-    const wx = `https://api.open-meteo.com/v1/forecast?latitude=${latStr}&longitude=${lonStr}&current=wind_speed_10m,wind_direction_10m,wind_gusts_10m&wind_speed_unit=ms&timezone=auto&model=best_match`;
-    const sea = `https://marine-api.open-meteo.com/v1/marine?latitude=${latStr}&longitude=${lonStr}&current=ocean_current_velocity,ocean_current_direction,wave_height,wave_direction&timezone=auto&model=best_match`;
-    const [w, m] = await Promise.all([fetchJson(wx), fetchJson(sea)]);
+    const wx = `https://api.open-meteo.com/v1/forecast?latitude=${latStr}&longitude=${lonStr}&current=wind_speed_10m,wind_direction_10m,wind_gusts_10m&hourly=wind_speed_10m,wind_direction_10m,wind_gusts_10m&wind_speed_unit=ms&timezone=auto&forecast_days=1&model=best_match`;
+    const sea = `https://marine-api.open-meteo.com/v1/marine?latitude=${latStr}&longitude=${lonStr}&current=ocean_current_velocity,ocean_current_direction,wave_height,wave_direction,wave_period&hourly=ocean_current_velocity,ocean_current_direction,wave_height,wave_direction,wave_period&timezone=auto&forecast_days=1&model=best_match`;
+    const [w, m, metRows] = await Promise.all([
+      fetchJson(wx),
+      fetchJson(sea),
+      Promise.allSettled(lats.map((lat,i)=>fetchMetWind(lat,lons[i])))
+    ]);
     const wr = Array.isArray(w) ? w : lats.map(()=>w);
     const mr = Array.isArray(m) ? m : lats.map(()=>m);
-    return { ok:true, points:lats.map((lat,i)=>({ lat, lon:lons[i], wind:wr[i]?.current||{}, marine:mr[i]?.current||{} })), source:'open-meteo grid via render backend', t:Date.now() };
+    return {
+      ok:true,
+      points:lats.map((lat,i)=>{
+        const metWind = metRows[i]?.status === 'fulfilled' ? metRows[i].value : {};
+        return {
+          lat,
+          lon:lons[i],
+          wind:mergeWind(nearestHourlyCurrent(wr[i] || {}), metWind),
+          marine:normalizeMarineCurrent(nearestHourlyCurrent(mr[i] || {}), (mr[i]?.current_units || mr[i]?.hourly_units || {}))
+        };
+      }),
+      source:'open-meteo + met.no grid via render backend',
+      t:Date.now()
+    };
   });
 }
 
@@ -322,7 +386,7 @@ export function startServer(port=8787){
     cors(res); if(req.method==='OPTIONS'){res.writeHead(204).end(); return;}
     const url=new URL(req.url,`http://${req.headers.host||'localhost'}`);
     try{
-      if(url.pathname==='/health'){res.writeHead(200,{'content-type':'application/json'}).end(JSON.stringify({ok:true,version:'v3-live-route',ways:osmCoastlineWays.length})); return;}
+      if(url.pathname==='/health'){res.writeHead(200,{'content-type':'application/json'}).end(JSON.stringify({ok:true,version:'v14-route-weather-field',ways:osmCoastlineWays.length})); return;}
 
       if(url.pathname==='/weather'){
         const lat=Number(url.searchParams.get('lat')), lon=Number(url.searchParams.get('lon'));

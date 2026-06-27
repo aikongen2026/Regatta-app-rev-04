@@ -1,0 +1,9 @@
+V13:
+- V foran vindretning/styrke i rødt.
+- B foran bølgehøyde/retning i grønt.
+- S foran strømstyrke/retning i blått.
+- Bedre vær/havdata:
+  * Open-Meteo best_match for vind og marine data.
+  * Henter både current og hourly og velger nærmeste time hvis current mangler.
+  * Backend bruker met.no som ekstra/fallback for vind der tilgjengelig.
+  * Normaliserer havstrøm til m/s hvis API returnerer km/h.

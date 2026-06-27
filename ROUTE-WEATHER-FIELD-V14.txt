@@ -1,0 +1,7 @@
+V14 - vær/strøm langs hele leggen
+
+- Taktisk rute bruker nå et vær-/havfelt langs anbefalt sjørute, ikke bare vær ved båten.
+- Appen sampler opptil 9 punkter langs aktiv legg og henter vind, bølger og strøm for hvert punkt.
+- Backend /weather-grid bruker Open-Meteo best_match + marine API og MET Norway som ekstra vindkilde.
+- SLÅ/GYB-beregning bruker vind og strøm ved leggens midt-/nærmeste punkt.
+- Planen er fortsatt stabilisert/låst slik at små oppdateringer ikke flytter vendepunktene hele tiden.

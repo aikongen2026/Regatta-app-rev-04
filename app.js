@@ -4,6 +4,7 @@ const R = 6371000;
 let marks = [], active = 0, pos = null, weather = null, lastFetch = 0;
 let line = { pin: null, boat: null }, deferredPrompt = null, simOn = false, simTimer = null, vectorOverlay = null;
 let vectorField = [], vectorFetchKey = '', vectorFetchInFlight = false, lastVectorFetch = 0;
+let routeWeatherField = { key: '', points: [], sig: '', t: 0 }, routeWeatherFetchInFlight = false;
 let pendingBoatStart = false, boatMarker = null, searchMarker = null;
 let gpsWatchId = null;
 let routeLine = null, redRouteLine = null, overlays = [], tackOverlays = [];
@@ -15,7 +16,7 @@ let lastTacticalPlan = {turns: [], mode: 'direct', next: null};
 let tacticalRouteLock = { key: '', route: null, turns: [], mode: 'direct', nextIdx: 1, createdAt: 0, pending: false };
 let boatNav = { active: null, route: [], idx: 1, pending: false, source: 'client' };
 let recommendedNav = { key: '', route: null, pending: false, error: null, t: 0 };
-const APP_VERSION = '2026-06-24-v12-tactical-chart';
+const APP_VERSION = '2026-06-24-v14-route-weather-field';
 const SAME_ORIGIN_ROUTE_API = ['localhost','127.0.0.1'].includes(location.hostname) || !/github\.io$/i.test(location.hostname)
   ? location.origin
   : '';
@@ -789,9 +790,9 @@ function vectorValues(sample){
   const waveTo=c.wave_direction??windTo;
   return {
     windTo, curTo, waveTo,
-    windLabel:`${(w.wind_speed_10m??4.7).toFixed(1)}m/s ${windFrom.toFixed(0)}°`,
-    currentLabel:`${(c.ocean_current_velocity??0.6).toFixed(1)}m/s ${curTo.toFixed(0)}°`,
-    waveLabel:`${(c.wave_height??0.4).toFixed(1)}m ${waveTo.toFixed(0)}°`
+    windLabel:`V ${(w.wind_speed_10m??4.7).toFixed(1)}m/s ${windFrom.toFixed(0)}°`,
+    waveLabel:`B ${(c.wave_height??0.4).toFixed(1)}m ${waveTo.toFixed(0)}°`,
+    currentLabel:`S ${(c.ocean_current_velocity??0.6).toFixed(2)}m/s ${curTo.toFixed(0)}°`
   };
 }
 function localVectorSample(lat,lon,i){
@@ -854,6 +855,96 @@ async function fetchVectorField(){
     console.warn('Vector weather fetch failed',err);
   }finally{ vectorFetchInFlight=false; }
 }
+
+function sampleRoutePoints(route, maxPoints=9){
+  if(!Array.isArray(route)||route.length<2)return [];
+  const segs=[]; let total=0;
+  for(let i=1;i<route.length;i++){
+    const a=route[i-1], b=route[i];
+    const d=distance(a[0],a[1],b[0],b[1]);
+    if(d>5){segs.push({a,b,d}); total+=d;}
+  }
+  if(!total)return [];
+  const n=Math.max(2,Math.min(maxPoints,Math.ceil(total/700)+1));
+  const out=[];
+  for(let k=0;k<n;k++){
+    const want=total*(k/(n-1));
+    let acc=0, chosen=segs.at(-1);
+    for(const s of segs){ if(acc+s.d>=want){chosen=s; break;} acc+=s.d; }
+    const t=chosen.d ? clamp((want-acc)/chosen.d,0,1) : 0;
+    const brg=bearing(chosen.a[0],chosen.a[1],chosen.b[0],chosen.b[1]);
+    const q=dest(chosen.a[0],chosen.a[1],brg,chosen.d*t);
+    if(!isLand(q.lat,q.lon))out.push({lat:q.lat,lon:q.lon});
+  }
+  return out;
+}
+function weatherSignatureFromRows(rows){
+  if(!Array.isArray(rows)||!rows.length)return '';
+  const q=(v,step=1)=>Number.isFinite(v)?Math.round(v/step)*step:0;
+  return rows.map(r=>{
+    const w=r.wind||{}, m=r.marine||{};
+    return [q(w.wind_direction_10m,10),q(w.wind_speed_10m,0.5),q(m.ocean_current_direction,20),q(m.ocean_current_velocity,0.1),q(m.wave_height,0.2)].join('/');
+  }).join('|');
+}
+function routeWeatherSampleAt(lat,lon){
+  const rows=routeWeatherField.points||[];
+  if(!rows.length)return weather||{};
+  let best=null, bestD=Infinity;
+  for(const r of rows){
+    const d=distance(lat,lon,r.lat,r.lon);
+    if(d<bestD){bestD=d; best=r;}
+  }
+  if(best && bestD<2500)return {wind:best.wind||weather?.wind||{}, marine:best.marine||weather?.marine||{}};
+  return weather||{};
+}
+function legWeatherSample(A,B){
+  const mid=dest(A[0],A[1],bearing(A[0],A[1],B[0],B[1]),distance(A[0],A[1],B[0],B[1])/2);
+  return routeWeatherSampleAt(mid.lat,mid.lon);
+}
+function requestRouteWeatherField(route){
+  if(routeWeatherFetchInFlight||!Array.isArray(route)||route.length<2)return;
+  const pts=sampleRoutePoints(route,9);
+  if(pts.length<2)return;
+  const key=pts.map(p=>`${p.lat.toFixed(3)},${p.lon.toFixed(3)}`).join('|');
+  if(routeWeatherField.key===key && Date.now()-(routeWeatherField.t||0)<180000)return;
+  routeWeatherFetchInFlight=true;
+  const finish=(rows=[])=>{
+    if(rows.length){
+      routeWeatherField={key,points:rows.map((r,i)=>({lat:pts[i].lat,lon:pts[i].lon,wind:r.wind||weather?.wind||{},marine:r.marine||weather?.marine||{}})),sig:'',t:Date.now()};
+      routeWeatherField.sig=weatherSignatureFromRows(routeWeatherField.points);
+      recommendedNav.key='';
+      tacticalRouteLock.key='';
+      renderRecommended();
+      updateTacticalPanel(tacticalRouteLock.route);
+    }
+  };
+  const lats=pts.map(p=>p.lat.toFixed(5)).join(',');
+  const lons=pts.map(p=>p.lon.toFixed(5)).join(',');
+  const fromDirect=async()=>{
+    const wx=`https://api.open-meteo.com/v1/forecast?latitude=${lats}&longitude=${lons}&current=wind_speed_10m,wind_direction_10m,wind_gusts_10m&hourly=wind_speed_10m,wind_direction_10m,wind_gusts_10m&wind_speed_unit=ms&timezone=auto&forecast_days=1&model=best_match`;
+    const sea=`https://marine-api.open-meteo.com/v1/marine?latitude=${lats}&longitude=${lons}&current=ocean_current_velocity,ocean_current_direction,wave_height,wave_direction,wave_period&hourly=ocean_current_velocity,ocean_current_direction,wave_height,wave_direction,wave_period&timezone=auto&forecast_days=1&model=best_match`;
+    const [w,m]=await Promise.all([fetch(wx).then(r=>r.json()),fetch(sea).then(r=>r.json())]);
+    const wr=Array.isArray(w)?w:pts.map(()=>w), mr=Array.isArray(m)?m:pts.map(()=>m);
+    return pts.map((_,i)=>({wind:nearestHourlyCurrent(wr[i]||{}),marine:normalizeMarineCurrent(nearestHourlyCurrent(mr[i]||{}),(mr[i]?.current_units||mr[i]?.hourly_units||{}))}));
+  };
+  (async()=>{
+    try{
+      let rows=null;
+      if(ROUTE_API_URL){
+        const r=await fetch(`${ROUTE_API_URL}/weather-grid?lats=${encodeURIComponent(lats)}&lons=${encodeURIComponent(lons)}`, {cache:'no-store'});
+        if(r.ok){
+          const data=await r.json();
+          if(data.ok&&Array.isArray(data.points))rows=data.points;
+        }
+      }
+      if(!rows)rows=await fromDirect();
+      finish(rows);
+    }catch(err){
+      console.warn('Route weather field failed',err);
+    }finally{ routeWeatherFetchInFlight=false; }
+  })();
+}
+
 function renderVectors(){
   if(!weather) return;
 
@@ -879,7 +970,7 @@ function renderVectors(){
         <span style="color:${color};font-size:16px;line-height:1;font-weight:900;display:inline-block;transform:rotate(${dir}deg)">➜</span>
         <span style="color:${color};font-size:9px;font-weight:800;white-space:nowrap">${val}</span>
       </div>`;
-    cell.innerHTML=`${row('#dc2626',v.windTo,v.windLabel)}${row('#16a34a',v.curTo,v.currentLabel)}${row('#2563eb',v.waveTo,v.waveLabel)}`;
+    cell.innerHTML=`${row('#dc2626',v.windTo,v.windLabel)}${row('#16a34a',v.waveTo,v.waveLabel)}${row('#2563eb',v.curTo,v.currentLabel)}`;
     vectorOverlay.appendChild(cell);
   });
 }
@@ -1138,7 +1229,7 @@ function routeKeyForRecommendation(target, rec){
   // mark, polar setup or weather changes enough to matter tactically.
   const q=(v,step=1)=>Number.isFinite(v)?Math.round(v/step)*step:0;
   return [
-    'stable-v12',
+    'stable-v14',
     active, marks.length,
     target.lat.toFixed(5), target.lon.toFixed(5),
     currentPolarMode(),
@@ -1146,7 +1237,8 @@ function routeKeyForRecommendation(target, rec){
     q(w.wind_speed_10m,0.5),
     q(m.ocean_current_direction,15),
     q(m.ocean_current_velocity,0.1),
-    q(m.wave_height,0.2)
+    q(m.wave_height,0.2),
+    routeWeatherField.sig || ''
   ].join('|');
 }
 
@@ -1207,7 +1299,7 @@ function updateTacticalPanel(route){
   }
   if(dataEl){
     const age=weather?.t?Date.now()-weather.t:(lastFetch?Date.now()-lastFetch:NaN);
-    dataEl.textContent=Number.isFinite(age)?`Vær/hav ${formatAge(age)}`:'Vær/hav –';
+    dataEl.textContent=Number.isFinite(age)?`Vær/hav ${formatAge(age)} · leggfelt ${routeWeatherField.points?.length||0} pkt`:'Vær/hav –';
     dataEl.className=Number.isFinite(age)&&age<180000?'ok':'warn';
   }
   if(chartEl){
@@ -1294,10 +1386,11 @@ function routeSegmentIsSafe(points){
 function expandLegWithTactics(A,B,rec,options={}){
   const legMeters=distance(A[0],A[1],B[0],B[1]);
   if(legMeters<120 || !weather?.wind)return {points:[A,B],turns:[],mode:'direct'};
-  const windFrom=weather.wind.wind_direction_10m;
+  const legSample=legWeatherSample(A,B);
+  const windFrom=legSample?.wind?.wind_direction_10m;
   if(!Number.isFinite(windFrom))return {points:[A,B],turns:[],mode:'direct'};
 
-  const twsKt=kt(weather.wind.wind_speed_10m??4.7);
+  const twsKt=kt(legSample?.wind?.wind_speed_10m??weather.wind.wind_speed_10m??4.7);
   const polar=rec?.polar || currentPolar();
   const beat=clamp(rowAtTws(polar.beatAngles,twsKt,polar), 32, 55);
   const gybe=clamp(rowAtTws(polar.gybeAngles,twsKt,polar), 130, 178);
@@ -1321,6 +1414,14 @@ function expandLegWithTactics(A,B,rec,options={}){
     label='GYB';
   } else {
     return {points:[A,B],turns:[],mode:'direct'};
+  }
+
+  const legCurrent=legSample?.marine||{};
+  if(Number.isFinite(legCurrent.ocean_current_velocity) && Number.isFinite(legCurrent.ocean_current_direction)){
+    const driftA=legCurrent.ocean_current_velocity*Math.sin(rad(diff(legCurrent.ocean_current_direction,courseA)));
+    const driftB=legCurrent.ocean_current_velocity*Math.sin(rad(diff(legCurrent.ocean_current_direction,courseB)));
+    courseA=norm(courseA+clamp(deg(Math.atan2(driftA,3.2)),-10,10));
+    courseB=norm(courseB+clamp(deg(Math.atan2(driftB,3.2)),-10,10));
   }
 
   const solved=solveTwoCourseDistances(legBrg,legMeters,courseA,courseB);
@@ -1373,6 +1474,7 @@ function recommendedRouteTo(target){
   const from={lat:pos.lat,lon:pos.lon};
   const rec=recommendedCourseTo(target);
   const safe=safeProjection(from,rec.course,900);
+  requestRouteWeatherField(safe);
   const fallbackPlan=makeTacticalRoute(safe,rec);
   const key=routeKeyForRecommendation(target,rec);
 
@@ -1432,6 +1534,7 @@ function recommendedRouteTo(target){
       fetchServerRoute(from, navTargetForMark(target), {clearance:28, grid:42, margin:1600})
         .then(data=>{
           if(recommendedNav.key!==key)return;
+          requestRouteWeatherField(data.route);
           const tactical=makeTacticalRoute(data.route,rec);
           recommendedNav={key,route:tactical.route,turns:tactical.turns,mode:tactical.mode,pending:false,error:null,t:Date.now()};
           tacticalRouteLock={key,route:tactical.route,turns:tactical.turns,mode:tactical.mode,nextIdx:1,createdAt:Date.now(),pending:false};
@@ -1456,7 +1559,8 @@ function recommendedRouteTo(target){
     fetchServerRoute(from, navTargetForMark(target), {clearance:28, grid:42, margin:1600})
       .then(data=>{
         if(recommendedNav.key!==key)return;
-        const tactical=makeTacticalRoute(data.route,rec);
+        requestRouteWeatherField(data.route);
+          const tactical=makeTacticalRoute(data.route,rec);
         recommendedNav={key,route:tactical.route,turns:tactical.turns,mode:tactical.mode,pending:false,error:null,t:Date.now()};
         tacticalRouteLock={key,route:tactical.route,turns:tactical.turns,mode:tactical.mode,nextIdx:1,createdAt:Date.now(),pending:false};
         renderRecommended();
@@ -1518,8 +1622,8 @@ function update(){
   $('course').textContent=Math.round(rec.course)+'°';
   
   const w=weather.wind||{},c=weather.marine||{};
-  $('wind').textContent=`${(w.wind_speed_10m??4.7).toFixed(1)} m/s fra ${(w.wind_direction_10m??177).toFixed(0)}°`;
-  $('sea').textContent=`strøm ${(c.ocean_current_velocity??0).toFixed(1)} m/s ${(c.ocean_current_direction??0).toFixed(0)}° / bølge ${(c.wave_height??0.4).toFixed(1)} m ${(c.wave_direction??0).toFixed(0)}°`;
+  $('wind').innerHTML=`<span style="color:#dc2626">V</span> ${(w.wind_speed_10m??4.7).toFixed(1)} m/s fra ${(w.wind_direction_10m??177).toFixed(0)}°`;
+  $('sea').innerHTML=`<span style="color:#16a34a">B</span> ${(c.wave_height??0.4).toFixed(1)} m ${(c.wave_direction??0).toFixed(0)}° / <span style="color:#2563eb">S</span> ${(c.ocean_current_velocity??0).toFixed(2)} m/s ${(c.ocean_current_direction??0).toFixed(0)}°`;
   if($('liveSpeed')) $('liveSpeed').textContent = Number.isFinite(pos.sog) ? `${kt(pos.sog).toFixed(1)} kn` : '–';
   if($('liveCourse')) $('liveCourse').textContent = Number.isFinite(pos.cog) ? `${Math.round(pos.cog)}°` : '–';
 
@@ -1572,13 +1676,43 @@ function update(){
   render();
 }
 
+
+function nearestHourlyCurrent(payload){
+  const h=payload?.hourly;
+  if(!h || !Array.isArray(h.time) || !h.time.length) return payload?.current || {};
+  const now=Date.now();
+  let best=0,bestDt=Infinity;
+  h.time.forEach((t,i)=>{
+    const ms=Date.parse(t);
+    const dt=Number.isFinite(ms)?Math.abs(ms-now):Infinity;
+    if(dt<bestDt){bestDt=dt;best=i;}
+  });
+  const out={...(payload.current||{})};
+  for(const k of ['wind_speed_10m','wind_direction_10m','wind_gusts_10m','wave_height','wave_direction','wave_period','ocean_current_velocity','ocean_current_direction']){
+    if(out[k]==null && Array.isArray(h[k])) out[k]=h[k][best];
+  }
+  return out;
+}
+function normalizeMarineCurrent(marine, units){
+  const out={...(marine||{})};
+  const unit=String(units?.ocean_current_velocity||'').toLowerCase();
+  // Open-Meteo Marine can return current speed in km/h depending on response units.
+  // Appen bruker m/s internt, så konverter bare når API-et sier km/h.
+  if(Number.isFinite(out.ocean_current_velocity) && (unit.includes('km/h') || unit.includes('kmh'))){
+    out.ocean_current_velocity = out.ocean_current_velocity / 3.6;
+  }
+  return out;
+}
+
 async function fetchData(lat,lon){
   setStatus('Henter vær/havdata...');
   const fallback = async () => {
-    const wx=`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=wind_speed_10m,wind_direction_10m,wind_gusts_10m&wind_speed_unit=ms&timezone=auto`;
-    const sea=`https://marine-api.open-meteo.com/v1/marine?latitude=${lat}&longitude=${lon}&current=ocean_current_velocity,ocean_current_direction,wave_height,wave_direction&timezone=auto`;
+    const wx=`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=wind_speed_10m,wind_direction_10m,wind_gusts_10m&hourly=wind_speed_10m,wind_direction_10m,wind_gusts_10m&wind_speed_unit=ms&timezone=auto&forecast_days=1&model=best_match`;
+    const sea=`https://marine-api.open-meteo.com/v1/marine?latitude=${lat}&longitude=${lon}&current=ocean_current_velocity,ocean_current_direction,wave_height,wave_direction,wave_period&hourly=ocean_current_velocity,ocean_current_direction,wave_height,wave_direction,wave_period&timezone=auto&forecast_days=1&model=best_match`;
     const [w,m]=await Promise.all([fetch(wx).then(r=>r.json()),fetch(sea).then(r=>r.json())]);
-    return {wind:w.current, marine:m.current, source:'open-meteo-direct'};
+    const wind=nearestHourlyCurrent(w);
+    const marine=normalizeMarineCurrent(nearestHourlyCurrent(m), m.current_units||m.hourly_units||{});
+    return {wind, marine, source:'open-meteo-direct-best-match'};
   };
   try{
     if(ROUTE_API_URL){
@@ -1602,7 +1736,7 @@ async function fetchData(lat,lon){
 }
 
 function simWeatherFallback(){
-  weather={wind:{wind_speed_10m:4.7,wind_direction_10m:177},marine:{ocean_current_velocity:0.55,ocean_current_direction:87,wave_height:0.4}};
+  weather={wind:{wind_speed_10m:4.7,wind_direction_10m:177},marine:{ocean_current_velocity:0.15,ocean_current_direction:87,wave_height:0.4,wave_direction:180}};
 }
 
 function setBoatStart(lat,lon,keep=false){
