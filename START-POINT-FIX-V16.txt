@@ -1,0 +1,8 @@
+Never 2 late Regatta v16
+
+Fikser valgt startpunkt:
+- Når bruker velger båtens startpunkt stoppes GPS-watch og demo-loop først.
+- Båtmarkør opprettes/flyttes umiddelbart til valgt startpunkt.
+- Lagre/render/update kjøres med én gang.
+- Når Start legges inn på kartet erstattes gammel Start i stedet for at flere Start-punkter legges oppå hverandre.
+- Koordinatimport og Hankø-demo stopper også GPS/demoloop før de flytter båten.

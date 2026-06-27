@@ -16,7 +16,7 @@ let lastTacticalPlan = {turns: [], mode: 'direct', next: null};
 let tacticalRouteLock = { key: '', route: null, turns: [], mode: 'direct', nextIdx: 1, createdAt: 0, pending: false };
 let boatNav = { active: null, route: [], idx: 1, pending: false, source: 'client' };
 let recommendedNav = { key: '', route: null, pending: false, error: null, t: 0 };
-const APP_VERSION = '2026-06-24-v14-route-weather-field';
+const APP_VERSION = '2026-06-24-v16-start-point-fix';
 const SAME_ORIGIN_ROUTE_API = ['localhost','127.0.0.1'].includes(location.hostname) || !/github\.io$/i.test(location.hostname)
   ? location.origin
   : '';
@@ -148,6 +148,25 @@ function stopGpsTracking(){
     try{ navigator.geolocation.clearWatch(gpsWatchId); }catch{}
   }
   gpsWatchId=null;
+}
+
+function stopLiveAndDemoForManualStart(){
+  // Når bruker velger et manuelt startpunkt skal ikke GPS-watch eller demo-loop
+  // flytte båten tilbake igjen rett etterpå. Live GPS kan startes på nytt med
+  // GPS-knappen etterpå hvis ønskelig.
+  simOn=false;
+  clearInterval(simTimer);
+  stopGpsTracking();
+  const startBtn=$('start');
+  const simBtn=$('sim');
+  if(startBtn) startBtn.textContent='Start live';
+  if(simBtn) simBtn.textContent='Start demo-sim';
+}
+
+function replaceCourseStartMark(lat,lon,name='Start'){
+  const rest=marks.filter(m=>m.type!=='start');
+  marks=[{name:name||'Start',lat,lon,type:'start'},...rest];
+  active=marks.length>1?1:0;
 }
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
@@ -476,6 +495,7 @@ function importCoordinateCourse(){
     const name=idx===0?'Start':idx===coords.length-1?'Mål':`Bøye ${idx}`;
     marks.push({name,lat,lon,type});
   });
+  stopLiveAndDemoForManualStart();
   const w=nearestWater(coords[0][0],coords[0][1]);
   pos={lat:w.lat,lon:w.lon,sog:ms(+$('simSpeed').value||5.5),cog:+$('simHeading').value||210};
   active=marks.length>1?1:0;
@@ -912,9 +932,10 @@ function requestRouteWeatherField(route){
     if(rows.length){
       routeWeatherField={key,points:rows.map((r,i)=>({lat:pts[i].lat,lon:pts[i].lon,wind:r.wind||weather?.wind||{},marine:r.marine||weather?.marine||{}})),sig:'',t:Date.now()};
       routeWeatherField.sig=weatherSignatureFromRows(routeWeatherField.points);
-      recommendedNav.key='';
-      tacticalRouteLock.key='';
-      renderRecommended();
+      // Do not unlock/re-render the red tactical route just because fresh
+      // weather samples arrive.  The samples are used the next time a plan is
+      // deliberately recalculated, but the current SLÅ/GYB-points must remain
+      // navigable and stable during live sailing.
       updateTacticalPanel(tacticalRouteLock.route);
     }
   };
@@ -1222,23 +1243,23 @@ function safeProjection(start,course,maxMeters=850){
 
 function routeKeyForRecommendation(target, rec){
   const w=weather?.wind||{}, m=weather?.marine||{};
-  // Important: do NOT include exact boat position in this key.  The old
-  // implementation did that, which made the red tactical route and all SLÅ/GYB
-  // points jump every time GPS updated.  We instead quantize weather and
-  // setup values so the plan is stable and only recalculated when the active
-  // mark, polar setup or weather changes enough to matter tactically.
+  // Important: do NOT include exact boat position OR detailed route-weather
+  // point signatures in this key.  v15 allowed the weather field along the leg
+  // to invalidate the tactical lock every time new API values arrived. That
+  // made the recommended course/SLÅ-points jump on the map.  v15 keeps the
+  // same stable behaviour as v13: the plan changes only on real tactical
+  // changes or when the user presses "Oppdater taktisk rute".
   const q=(v,step=1)=>Number.isFinite(v)?Math.round(v/step)*step:0;
   return [
-    'stable-v14',
+    'stable-v15',
     active, marks.length,
     target.lat.toFixed(5), target.lon.toFixed(5),
     currentPolarMode(),
-    q(w.wind_direction_10m,10),
-    q(w.wind_speed_10m,0.5),
-    q(m.ocean_current_direction,15),
-    q(m.ocean_current_velocity,0.1),
-    q(m.wave_height,0.2),
-    routeWeatherField.sig || ''
+    q(w.wind_direction_10m,12),
+    q(w.wind_speed_10m,0.7),
+    q(m.ocean_current_direction,20),
+    q(m.ocean_current_velocity,0.15),
+    q(m.wave_height,0.3)
   ].join('|');
 }
 
@@ -1740,20 +1761,31 @@ function simWeatherFallback(){
 }
 
 function setBoatStart(lat,lon,keep=false){
-  // Snap the requested start location to the nearest water point.  This avoids
-  // situations where the user accidentally clicks on land or a pier and the
-  // simulation immediately relocates the boat to a different location on the
-  // first update. nearestWater(lat,lon) returns the original coordinates
-  // unchanged when the point is already on water.
+  // Manuelt valgt startpunkt skal være stabilt. Derfor stoppes både GPS-watch
+  // og demo-loop før posisjonen settes; ellers kan neste GPS/demosteg flytte
+  // båten tilbake til gammel posisjon.
+  stopLiveAndDemoForManualStart();
+
+  // Snap bare hvis punktet faktisk ligger på land. Hvis punktet er på vann,
+  // beholdes valgt posisjon uendret.
   const w=nearestWater(lat,lon);
   pos={lat:w.lat,lon:w.lon,sog:ms(+$('simSpeed').value||5.5),cog:+$('simHeading').value||210};
   resetBoatNav();
   pendingBoatStart=false;
-  $('setBoatStart').classList.remove('armed');
-  $('setBoatStart').textContent='Endre båtens startpunkt';
-  if(boatMarker)boatMarker.setLatLng([pos.lat,pos.lon]);
+  const setBtn=$('setBoatStart');
+  if(setBtn){
+    setBtn.classList.remove('armed');
+    setBtn.textContent='Endre båtens startpunkt';
+  }
+  if(!boatMarker){
+    boatMarker=L.marker([pos.lat,pos.lon],{icon: boatIcon(),draggable:true}).addTo(map).bindPopup('Never 2 late');
+    boatMarker.on('dragend',e=>{const ll=e.target.getLatLng();setBoatStart(ll.lat,ll.lng,true);});
+  }
+  boatMarker.setLatLng([pos.lat,pos.lon]);
+  save();
+  render();
   fetchData(pos.lat,pos.lon).finally(()=>{update()});
-  map.setView([pos.lat,pos.lon],14);
+  map.setView([pos.lat,pos.lon],Math.max(map.getZoom(),14));
 }
 
 function advanceBoatOnCourse(dtSec){
@@ -1821,11 +1853,10 @@ function applyMapPointChoice(latlng,choice,name=''){
   const type=choice==='1'?'start':choice==='3'?'mål':'runding';
   const finalName=name.trim() || (choice==='1'?'Start':choice==='3'?'Mål':`Bøye ${marks.length+1}`);
   if(choice==='1') {
-    marks.unshift({name:finalName,lat:latlng.lat,lon:latlng.lng,type});
-    active=marks.length>1?1:0;
-    // Snap the start mark to the nearest water point. This mirrors
-    // setBoatStart() and avoids immediately shifting the boat on the
-    // first simulation step.
+    // Erstatt eksisterende start i stedet for å legge inn flere Start-punkter.
+    // Båten flyttes samtidig til dette startpunktet.
+    replaceCourseStartMark(latlng.lat,latlng.lng,finalName);
+    stopLiveAndDemoForManualStart();
     const w=nearestWater(latlng.lat,latlng.lng);
     pos={lat:w.lat,lon:w.lon,sog:ms(+$('simSpeed').value||5.5),cog:+$('simHeading').value||210};
     resetBoatNav();
@@ -2060,6 +2091,7 @@ $('setBoatStart').onclick=()=>{
   $('setBoatStart').textContent=pendingBoatStart?'Trykk på kartet':'Endre båtens startpunkt';
 };
 $('sample').onclick=()=>{
+  stopLiveAndDemoForManualStart();
   marks=[{name:'Start',lat:59.2015,lon:10.7663,type:'start'},{name:'Bøye 2',lat:59.2165,lon:10.7705,type:'runding'},{name:'Bunn',lat:59.193,lon:10.792,type:'runding'},{name:'Mål',lat:59.2017,lon:10.767,type:'mål'}];
   active=0;
   pos={lat:marks[0].lat,lon:marks[0].lon,sog:ms(+$('simSpeed').value||5.5),cog:+$('simHeading').value||210};

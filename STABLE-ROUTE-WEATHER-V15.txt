@@ -1,0 +1,10 @@
+# V15 – Stabil anbefalt kurs med værfelt
+
+Denne versjonen retter v14-problemet der anbefalt kurs og SLÅ/GYB-punkter kunne hoppe frem og tilbake når nye vær-/havpunkter langs leggen kom inn.
+
+Endringer:
+- Detaljert værfelt langs ruten låser ikke lenger opp taktisk plan automatisk.
+- SLÅ/GYB-punkter holdes stabile som i v13/v12.
+- Vær-/havdata langs leggen hentes fortsatt og vises i taktisk panel.
+- Nye rutedata brukes ved neste bevisste omberegning, f.eks. "Oppdater taktisk rute" eller reell endring i merke/vær/polar/avvik.
+- Replan-nøkkel er grovere og mer robust for live GPS-bruk.
