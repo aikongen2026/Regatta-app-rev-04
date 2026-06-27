@@ -320,3 +320,28 @@ header h1 small{font-size:.72em;color:#93c5fd;background:#0f2a44;border-radius:8
   font-weight: 700;
   opacity: .95;
 }
+
+
+.startLegLabel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-width: 86px;
+  padding: 4px 7px;
+  border-radius: 9px;
+  background: rgba(37, 99, 235, .96);
+  color: #fff;
+  border: 1px solid rgba(255,255,255,.9);
+  box-shadow: 0 4px 12px rgba(0,0,0,.35);
+  font-size: 10px;
+  line-height: 1.08;
+  font-weight: 900;
+  text-shadow: 0 1px 1px rgba(0,0,0,.35);
+}
+.startLegLabel span {
+  font-size: 9px;
+  font-weight: 750;
+  opacity: .96;
+  white-space: nowrap;
+}

@@ -1,0 +1,9 @@
+# MAP SEARCH V7
+
+Endringer:
+- Lagt til forslag/autocomplete mens brukeren skriver i søkefeltet.
+- Forslag hentes kun fra Norge, Sverige og Danmark via Nominatim countrycodes=no,se,dk.
+- Inputfeltet bruker datalist slik at forslag vises under feltet.
+- Koordinater gjenkjennes fortsatt direkte.
+- Ved valg av forslag settes søkeresultatet aktivt og kan legges inn som start, rundingsbøye eller mål.
+- App-versjon oppdatert til 2026-06-24-v7-search-suggestions.

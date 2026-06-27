@@ -8,12 +8,12 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="Regatta">
   <!-- Preserve manifest and icons exactly as in the original minified file -->
-  <link rel="manifest" href="manifest.webmanifest?v=2026-06-24-v6-tactical-route">
+  <link rel="manifest" href="manifest.webmanifest?v=2026-06-24-v8-start-leg-label">
   <link rel="icon" href="icon-192.png">
   <link rel="apple-touch-icon" href="icon-192.png">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <title>Never 2 late Regatta v3</title>
-  <link rel="stylesheet" href="style.css?v=2026-06-24-v6-tactical-route">
+  <link rel="stylesheet" href="style.css?v=2026-06-24-v8-start-leg-label">
 </head>
 <body>
 <header>
@@ -80,7 +80,8 @@
     <h3>Søk / koordinater</h3>
     <p class="muted">Søk etter navn på holmer, skjær, grunner eller lim inn koordinater. Eksempel: <b>59.2051, 10.7912</b>.</p>
     <div class="search-grid">
-      <input id="placeSearch" type="text" placeholder="Navn eller koordinater">
+      <input id="placeSearch" type="text" list="placeSuggestions" autocomplete="off" placeholder="Navn eller koordinater">
+      <datalist id="placeSuggestions"></datalist>
       <button id="searchPlace" class="secondary">Søk</button>
     </div>
     <select id="searchResults" class="wide-select">
@@ -96,7 +97,7 @@
     <div class="buttons">
       <button id="importCoordCourse" class="secondary">Importer koordinatliste som bane</button>
     </div>
-    <p id="searchStatus" class="muted">Søk bruker koordinater direkte eller OpenStreetMap/Nominatim for stedsnavn.</p>
+    <p id="searchStatus" class="muted">Søk bruker koordinater direkte eller OpenStreetMap/Nominatim for stedsnavn i Norge, Sverige og Danmark. Forslag vises mens du skriver.</p>
   </section>
   <section class="panel">
     <h3>Bane fra kart</h3>
@@ -150,6 +151,6 @@
   </section>
 </main>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="app.js?v=2026-06-24-v6-tactical-route"></script>
+<script src="app.js?v=2026-06-24-v8-start-leg-label"></script>
 </body>
 </html>

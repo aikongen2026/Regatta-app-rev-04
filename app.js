@@ -11,7 +11,7 @@ let searchResultsData = [];
 let lastTacticalPlan = {turns: [], mode: 'direct', next: null};
 let boatNav = { active: null, route: [], idx: 1, pending: false, source: 'client' };
 let recommendedNav = { key: '', route: null, pending: false, error: null, t: 0 };
-const APP_VERSION = '2026-06-24-v6-tactical-route';
+const APP_VERSION = '2026-06-24-v8-start-leg-label';
 const SAME_ORIGIN_ROUTE_API = ['localhost','127.0.0.1'].includes(location.hostname) || !/github\.io$/i.test(location.hostname)
   ? location.origin
   : '';
@@ -318,9 +318,97 @@ function focusSearchResult(result){
   searchMarker=L.marker([result.lat,result.lon]).addTo(map).bindPopup(result.label||'Søkeresultat');
   map.setView([result.lat,result.lon], Math.max(map.getZoom?.()||13, 15));
 }
+let placeSuggestTimer=null;
+let placeSuggestAbort=null;
+let placeSuggestSeq=0;
+function countryLabelFromCode(code){
+  const c=String(code||'').toLowerCase();
+  if(c==='no')return 'Norge';
+  if(c==='se')return 'Sverige';
+  if(c==='dk')return 'Danmark';
+  return c.toUpperCase();
+}
+function compactSearchLabel(row,q=''){
+  const name=row.name || row.display_name || q;
+  const a=row.address||{};
+  const parts=[name,a.municipality||a.city||a.town||a.village||a.county,countryLabelFromCode(a.country_code)].filter(Boolean);
+  return [...new Set(parts)].join(', ');
+}
+function updatePlaceSuggestionList(items){
+  searchResultsData = items || [];
+  const dl=$('placeSuggestions');
+  if(dl){
+    dl.innerHTML=(items||[]).map((r,i)=>{
+      const value=(r.label||`Treff ${i+1}`).replace(/[<>&"]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]));
+      return `<option value="${value}"></option>`;
+    }).join('');
+  }
+  if(items?.length){
+    showSearchResults(items);
+    setSearchStatus(`${items.length} forslag i Norge/Sverige/Danmark. Velg forslag, eller trykk Søk.`);
+  }
+}
+async function fetchPlaceSuggestions(q){
+  const direct=parseCoordinatePair(q);
+  if(direct){
+    const item={lat:direct.lat,lon:direct.lon,label:`Koordinat ${direct.lat.toFixed(5)}, ${direct.lon.toFixed(5)}`};
+    updatePlaceSuggestionList([item]);
+    return;
+  }
+  if(q.trim().length<2){
+    updatePlaceSuggestionList([]);
+    setSearchStatus('Skriv minst 2 tegn, eller lim inn koordinater.');
+    return;
+  }
+  const mySeq=++placeSuggestSeq;
+  if(placeSuggestAbort) try{placeSuggestAbort.abort();}catch{}
+  placeSuggestAbort=new AbortController();
+  try{
+    const url=`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=8&addressdetails=1&dedupe=1&countrycodes=no,se,dk&q=${encodeURIComponent(q)}`;
+    const r=await fetch(url,{headers:{'Accept':'application/json'},signal:placeSuggestAbort.signal});
+    if(!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+    if(mySeq!==placeSuggestSeq) return;
+    const rows=await r.json();
+    const items=(rows||[]).map(row=>({
+      lat:Number(row.lat),
+      lon:Number(row.lon),
+      label:compactSearchLabel(row,q),
+      rawLabel:row.display_name||q
+    })).filter(x=>Number.isFinite(x.lat)&&Number.isFinite(x.lon));
+    updatePlaceSuggestionList(items);
+  }catch(err){
+    if(err?.name==='AbortError') return;
+    console.warn('Suggestion search failed',err);
+    setSearchStatus('Forslag feilet. Trykk Søk eller bruk koordinater direkte.');
+  }
+}
+function schedulePlaceSuggestions(){
+  const q=($('placeSearch')?.value||'').trim();
+  clearTimeout(placeSuggestTimer);
+  placeSuggestTimer=setTimeout(()=>fetchPlaceSuggestions(q),260);
+}
+function chooseTypedSuggestion(){
+  const q=($('placeSearch')?.value||'').trim();
+  if(!q||!searchResultsData?.length)return null;
+  const hit=searchResultsData.find(r => (r.label||'').toLowerCase()===q.toLowerCase() || (r.rawLabel||'').toLowerCase()===q.toLowerCase());
+  if(hit){
+    showSearchResults(searchResultsData);
+    const idx=searchResultsData.indexOf(hit);
+    const sel=$('searchResults');
+    if(sel) sel.value=String(idx);
+    focusSearchResult(hit);
+    return hit;
+  }
+  return null;
+}
 async function searchPlaceOrCoordinate(){
   const q=($('placeSearch')?.value||'').trim();
   if(!q){ setSearchStatus('Skriv inn navn eller koordinater.'); return; }
+  const selectedSuggestion=chooseTypedSuggestion();
+  if(selectedSuggestion){
+    setSearchStatus('Forslag valgt. Velg om punktet skal være start, rundingsbøye eller mål.');
+    return;
+  }
   const direct=parseCoordinatePair(q);
   if(direct){
     const item={lat:direct.lat,lon:direct.lon,label:`Koordinat ${direct.lat.toFixed(5)}, ${direct.lon.toFixed(5)}`};
@@ -331,14 +419,15 @@ async function searchPlaceOrCoordinate(){
   }
   setSearchStatus('Søker etter sted...');
   try{
-    const url=`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=8&countrycodes=no&q=${encodeURIComponent(q)}`;
+    const url=`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=8&addressdetails=1&dedupe=1&countrycodes=no,se,dk&q=${encodeURIComponent(q)}`;
     const r=await fetch(url,{headers:{'Accept':'application/json'}});
     if(!r.ok) throw new Error(`${r.status} ${r.statusText}`);
     const rows=await r.json();
     const items=(rows||[]).map(row=>({
       lat:Number(row.lat),
       lon:Number(row.lon),
-      label:row.display_name||q
+      label:compactSearchLabel(row,q),
+      rawLabel:row.display_name||q
     })).filter(x=>Number.isFinite(x.lat)&&Number.isFinite(x.lon));
     showSearchResults(items);
     if(items[0]){ focusSearchResult(items[0]); setSearchStatus(`${items.length} treff. Velg treff og legg til punkt i banen.`); }
@@ -1183,6 +1272,24 @@ function renderRecommended(){
   const t=marks[active];
   const pts=recommendedRouteTo(t);
   redRouteLine=L.polyline(pts,{color:'#ef4444',weight:4.5,opacity:0.98,dashArray:'5 8'}).addTo(map);
+
+  // Show explicit guidance on the first tactical leg from the boat/start
+  // position to the first tack/gybe point. Earlier versions only labelled
+  // the turn points themselves, which made the first segment look like a
+  // plain red line with no instruction.
+  if(Array.isArray(pts) && pts.length>=2){
+    const a=pts[0], b=pts[1];
+    const firstCourse=Math.round(bearing(a[0],a[1],b[0],b[1]));
+    const firstDist=distance(a[0],a[1],b[0],b[1]);
+    const mode=lastTacticalPlan.mode||recommendedNav.mode||'direct';
+    const nextAction=mode==='kryss' ? 'til SLÅ' : mode==='lens' ? 'til GYB' : 'mot merke';
+    const mid=dest(a[0],a[1],firstCourse,Math.min(firstDist*0.48,450));
+    const km=firstDist>=1000 ? `${(firstDist/1000).toFixed(1)} km` : `${Math.round(firstDist)} m`;
+    const html=`<div class="startLegLabel"><b>SEIL ${firstCourse}°</b><span>${km} ${nextAction}</span></div>`;
+    const marker=L.marker([mid.lat,mid.lon],{icon:L.divIcon({html,iconSize:[92,34],iconAnchor:[46,17],className:'tackIcon'})}).addTo(map);
+    tackOverlays.push(marker);
+  }
+
   const turns=lastTacticalPlan.turns||recommendedNav.turns||[];
   for(const turn of turns){
     const html=`<div class="tackLabel"><b>${turn.label}</b><span>${turn.course}°</span></div>`;
@@ -1621,7 +1728,11 @@ $('useHere').onclick=()=>{if(!pos)return alert('Start GPS eller demo først');ma
 $('setPin').onclick=()=>{if(!pos)return alert('Start GPS eller demo først');line.pin={lat:pos.lat,lon:pos.lon};save();render();};
 $('setBoat').onclick=()=>{if(!pos)return alert('Start GPS eller demo først');line.boat={lat:pos.lat,lon:pos.lon};save();render();};
 if($('searchPlace')) $('searchPlace').onclick=()=>searchPlaceOrCoordinate();
-if($('placeSearch')) $('placeSearch').onkeydown=e=>{ if(e.key==='Enter') searchPlaceOrCoordinate(); };
+if($('placeSearch')){
+  $('placeSearch').oninput=()=>schedulePlaceSuggestions();
+  $('placeSearch').onchange=()=>chooseTypedSuggestion();
+  $('placeSearch').onkeydown=e=>{ if(e.key==='Enter') searchPlaceOrCoordinate(); };
+}
 if($('searchResults')) $('searchResults').onchange=()=>focusSearchResult(selectedSearchResult());
 if($('centerSearch')) $('centerSearch').onclick=()=>focusSearchResult(selectedSearchResult());
 if($('addSearchStart')) $('addSearchStart').onclick=()=>addSelectedSearchAs('1');
