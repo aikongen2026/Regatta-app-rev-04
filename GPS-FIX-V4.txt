@@ -1,0 +1,9 @@
+GPS-fiks V4
+
+Endringer:
+- Start live bruker nå korrekt watchPosition(success, error, options).
+- Høy nøyaktighet er aktivert med enableHighAccuracy:true, maximumAge:0 og timeout.
+- Appen viser rå GPS-posisjon på kartet i stedet for å flytte live-posisjonen via nearestWater().
+- Ruting kan fortsatt snappe til vann internt, men båtmarkøren viser faktisk GPS-posisjon.
+- Status viser GPS-nøyaktighet (f.eks. GPS live ±8 m).
+- Cache-versjon er oppdatert slik at mobil/PWA henter ny appkode etter deploy.

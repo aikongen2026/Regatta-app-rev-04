@@ -241,3 +241,54 @@ table td, table th {
   }
 }
 header h1 small{font-size:.72em;color:#93c5fd;background:#0f2a44;border-radius:8px;padding:2px 6px;margin-left:6px}
+
+
+.map-select-label {
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  margin: .1rem;
+  padding: .35rem .55rem;
+  border-radius: .375rem;
+  background: #1e293b;
+  color: #cbd5e1;
+  font-size: .85rem;
+}
+.map-select-label select,
+.wide-select,
+#placeSearch,
+#coordCourse {
+  background: #0f172a;
+  color: #e2e8f0;
+  border: 1px solid #475569;
+  border-radius: .375rem;
+  padding: .45rem .55rem;
+}
+.search-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: .45rem;
+  align-items: center;
+  margin: .45rem 0;
+}
+.wide-select {
+  width: 100%;
+  margin: .35rem 0 .45rem;
+}
+#coordCourse {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: .6rem;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  resize: vertical;
+}
+
+@media (max-width: 720px) {
+  .search-grid {
+    grid-template-columns: 1fr;
+  }
+  .map-select-label {
+    width: calc(100% - .2rem);
+    justify-content: space-between;
+  }
+}

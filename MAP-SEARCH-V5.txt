@@ -1,0 +1,15 @@
+Oppdatering v5 – kartvalg og søk/koordinater
+
+Nytt:
+- Nedtrekksmeny for karttype: Standard, Satellitt, Hybrid, Marin og Topografisk.
+- Marin-modus bruker OpenSeaMap seamark-overlegg over OSM.
+- Søkepanel for holmer/skjær/grunner/stedsnavn via OpenStreetMap/Nominatim.
+- Koordinater kan limes inn direkte i format som 59.2051, 10.7912.
+- Søkeresultat kan legges til som start, rundingsbøye eller mål.
+- Hel bane kan importeres fra koordinatliste, ett punkt per linje.
+- GPS-fix fra v4 er beholdt.
+
+Deploy:
+- Pakk ut filene i repoet.
+- Commit/push til main.
+- Kjør Deploy latest commit i Render.

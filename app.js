@@ -4,12 +4,13 @@ const R = 6371000;
 let marks = [], active = 0, pos = null, weather = null, lastFetch = 0;
 let line = { pin: null, boat: null }, deferredPrompt = null, simOn = false, simTimer = null, vectorOverlay = null;
 let vectorField = [], vectorFetchKey = '', vectorFetchInFlight = false, lastVectorFetch = 0;
-let pendingBoatStart = false, boatMarker = null;
+let pendingBoatStart = false, boatMarker = null, searchMarker = null;
 let gpsWatchId = null;
 let routeLine = null, redRouteLine = null, overlays = [];
+let searchResultsData = [];
 let boatNav = { active: null, route: [], idx: 1, pending: false, source: 'client' };
 let recommendedNav = { key: '', route: null, pending: false, error: null, t: 0 };
-const APP_VERSION = '2026-05-30-v3-live-route';
+const APP_VERSION = '2026-06-24-v5-map-search';
 const SAME_ORIGIN_ROUTE_API = ['localhost','127.0.0.1'].includes(location.hostname) || !/github\.io$/i.test(location.hostname)
   ? location.origin
   : '';
@@ -82,10 +83,43 @@ if (localStorage.regattaAppVersion !== APP_VERSION) {
 
 const map = L.map('map', { zoomControl: true }).setView([59.205, 10.79], 13);
 
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-  maxZoom: 20,
-  attribution: '© OSM'
-}).addTo(map);
+// Flere karttyper.  Kartlagene byttes via nedtrekksmenyen i UI.
+// Marin bruker OpenStreetMap som base og OpenSeaMap som sjøkart-/seamark-overlegg.
+let currentMapLayers = [];
+const MAP_TYPES = {
+  standard: [
+    { url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', opts: { maxZoom: 20, attribution: '© OSM' } }
+  ],
+  satellite: [
+    { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', opts: { maxZoom: 19, attribution: 'Tiles © Esri' } }
+  ],
+  hybrid: [
+    { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', opts: { maxZoom: 19, attribution: 'Tiles © Esri' } },
+    { url: 'https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png', opts: { maxZoom: 20, attribution: '© CARTO' } }
+  ],
+  marine: [
+    { url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', opts: { maxZoom: 20, attribution: '© OSM' } },
+    { url: 'https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png', opts: { maxZoom: 18, attribution: '© OpenSeaMap' } }
+  ],
+  topo: [
+    { url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', opts: { maxZoom: 17, attribution: '© OpenTopoMap' } }
+  ]
+};
+function setMapType(type){
+  currentMapLayers.forEach(layer => { try { map.removeLayer(layer); } catch {} });
+  currentMapLayers = [];
+  const chosen = MAP_TYPES[type] || MAP_TYPES.standard;
+  chosen.forEach(def => {
+    const layer = L.tileLayer(def.url, def.opts).addTo(map);
+    currentMapLayers.push(layer);
+  });
+  localStorage.regattaMapType = type;
+}
+setMapType(localStorage.regattaMapType || 'standard');
+if($('mapType')){
+  $('mapType').value = localStorage.regattaMapType || 'standard';
+  $('mapType').onchange = e => setMapType(e.target.value);
+}
 
 function setStatus(text){$('status').textContent=`${text} · ${APP_VERSION.replace('2026-05-02-','')}`;}
 
@@ -218,6 +252,130 @@ function parseKml(text){
   });
   return pts;
 }
+
+function normalizeCoordNumber(s){
+  return Number(String(s).trim().replace(',', '.'));
+}
+function parseCoordinatePair(text){
+  const matches = String(text||'')
+    .replace(/[NØØEWS]/gi, ' ')
+    .match(/[-+]?\d+(?:[.,]\d+)?/g) || [];
+  if(matches.length < 2) return null;
+  const lat = normalizeCoordNumber(matches[0]);
+  const lon = normalizeCoordNumber(matches[1]);
+  if(!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  if(Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
+  return {lat, lon};
+}
+function parseCoordinateList(text){
+  const lines = String(text||'')
+    .split(/[\n;]/)
+    .map(s => s.trim())
+    .filter(Boolean);
+  const pts = [];
+  for(const line of lines){
+    const p = parseCoordinatePair(line);
+    if(p) pts.push([p.lat, p.lon]);
+  }
+  // If user pasted one long list of coordinates without line breaks, try to parse
+  // pairs in sequence: lat lon lat lon ...
+  if(pts.length < 2){
+    const matches = String(text||'').match(/[-+]?\d+(?:[.,]\d+)?/g) || [];
+    const seq = [];
+    for(let i=0; i+1<matches.length; i+=2){
+      const lat = normalizeCoordNumber(matches[i]);
+      const lon = normalizeCoordNumber(matches[i+1]);
+      if(Number.isFinite(lat)&&Number.isFinite(lon)&&Math.abs(lat)<=90&&Math.abs(lon)<=180) seq.push([lat,lon]);
+    }
+    if(seq.length >= 2) return seq;
+  }
+  return pts;
+}
+function setSearchStatus(text){
+  const el=$('searchStatus');
+  if(el) el.textContent=text;
+}
+function showSearchResults(items){
+  searchResultsData = items || [];
+  const sel=$('searchResults');
+  if(!sel) return;
+  if(!searchResultsData.length){
+    sel.innerHTML='<option value="">Ingen treff</option>';
+    return;
+  }
+  sel.innerHTML=searchResultsData.map((r,i)=>`<option value="${i}">${(r.label||`Treff ${i+1}`).replace(/[<>&"]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]))}</option>`).join('');
+}
+function selectedSearchResult(){
+  const sel=$('searchResults');
+  if(!sel) return null;
+  const idx=Number(sel.value);
+  return Number.isFinite(idx) ? searchResultsData[idx] : null;
+}
+function focusSearchResult(result){
+  if(!result) return;
+  if(searchMarker){ try{ searchMarker.remove(); }catch{} searchMarker=null; }
+  searchMarker=L.marker([result.lat,result.lon]).addTo(map).bindPopup(result.label||'Søkeresultat');
+  map.setView([result.lat,result.lon], Math.max(map.getZoom?.()||13, 15));
+}
+async function searchPlaceOrCoordinate(){
+  const q=($('placeSearch')?.value||'').trim();
+  if(!q){ setSearchStatus('Skriv inn navn eller koordinater.'); return; }
+  const direct=parseCoordinatePair(q);
+  if(direct){
+    const item={lat:direct.lat,lon:direct.lon,label:`Koordinat ${direct.lat.toFixed(5)}, ${direct.lon.toFixed(5)}`};
+    showSearchResults([item]);
+    focusSearchResult(item);
+    setSearchStatus('Koordinat funnet. Velg om punktet skal være start, rundingsbøye eller mål.');
+    return;
+  }
+  setSearchStatus('Søker etter sted...');
+  try{
+    const url=`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=8&countrycodes=no&q=${encodeURIComponent(q)}`;
+    const r=await fetch(url,{headers:{'Accept':'application/json'}});
+    if(!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+    const rows=await r.json();
+    const items=(rows||[]).map(row=>({
+      lat:Number(row.lat),
+      lon:Number(row.lon),
+      label:row.display_name||q
+    })).filter(x=>Number.isFinite(x.lat)&&Number.isFinite(x.lon));
+    showSearchResults(items);
+    if(items[0]){ focusSearchResult(items[0]); setSearchStatus(`${items.length} treff. Velg treff og legg til punkt i banen.`); }
+    else setSearchStatus('Ingen treff. Prøv navn + kommune, eller bruk koordinater.');
+  }catch(err){
+    console.warn('Search failed',err);
+    setSearchStatus('Søk feilet. Prøv koordinater direkte, eller kontroller nettdekning.');
+  }
+}
+function addSelectedSearchAs(choice){
+  const r=selectedSearchResult();
+  if(!r){ setSearchStatus('Velg et søkeresultat først.'); return; }
+  const name = choice==='1' ? 'Start' : choice==='3' ? 'Mål' : (r.label||`Bøye ${marks.length+1}`).split(',')[0].slice(0,40);
+  applyMapPointChoice({lat:r.lat,lng:r.lon},choice,name);
+  setSearchStatus(`${name} lagt til i banen.`);
+}
+function importCoordinateCourse(){
+  const text=$('coordCourse')?.value||'';
+  const coords=parseCoordinateList(text);
+  if(coords.length<2){ setSearchStatus('Fant ikke nok koordinater. Bruk ett punkt per linje: lat, lon.'); return; }
+  marks=[];
+  active=0;
+  line={pin:null,boat:null};
+  resetBoatNav();
+  coords.forEach(([lat,lon],idx)=>{
+    const type=idx===0?'start':idx===coords.length-1?'mål':'runding';
+    const name=idx===0?'Start':idx===coords.length-1?'Mål':`Bøye ${idx}`;
+    marks.push({name,lat,lon,type});
+  });
+  const w=nearestWater(coords[0][0],coords[0][1]);
+  pos={lat:w.lat,lon:w.lon,sog:ms(+$('simSpeed').value||5.5),cog:+$('simHeading').value||210};
+  active=marks.length>1?1:0;
+  save();render();update();
+  map.setView([pos.lat,pos.lon],14);
+  setSearchStatus(`Importerte ${marks.length} punkter som bane.`);
+}
+
+
 function interp1(xs,ys,x){
   if(!xs?.length||!ys?.length)return 0;
   if(x<=xs[0])return ys[0];
@@ -1242,18 +1400,78 @@ $('sim').onclick=async()=>{
   startSimLoop();
   update();
 };
+function applyLiveGpsPosition(p){
+  // Use the raw GPS position for the visible boat marker. Earlier versions
+  // snapped the live position to nearestWater(), which could move the marker
+  // away from the real boat when the land mask was too coarse or the boat was
+  // close to a pier/shoreline. Snapping is still used by routing functions,
+  // but not for the actual live GPS marker.
+  const lat = p?.coords?.latitude;
+  const lon = p?.coords?.longitude;
+  if(!Number.isFinite(lat) || !Number.isFinite(lon)){
+    setStatus('GPS mangler koordinater');
+    return;
+  }
+  const prev = pos ? {...pos} : null;
+  const speed = Number.isFinite(p.coords.speed) && p.coords.speed >= 0 ? p.coords.speed : (pos?.sog || 0);
+  let cog = Number.isFinite(p.coords.heading) && p.coords.heading >= 0 ? p.coords.heading : (pos?.cog || 180);
+  // Many phones report heading as null until the boat is moving. If we have
+  // moved a few metres since the last fix, derive COG from the last GPS point.
+  if(prev && (!Number.isFinite(p.coords.heading) || p.coords.heading < 0)){
+    const moved = distance(prev.lat, prev.lon, lat, lon);
+    if(moved > 3) cog = bearing(prev.lat, prev.lon, lat, lon);
+  }
+  pos = { lat, lon, sog: speed, cog };
+  if(boatMarker) boatMarker.setLatLng([pos.lat,pos.lon]);
+  map.setView([pos.lat,pos.lon], Math.max(map.getZoom(), 15));
+  const acc = Number.isFinite(p.coords.accuracy) ? Math.round(p.coords.accuracy) : null;
+  setStatus(acc ? `GPS live ±${acc} m` : 'GPS live');
+  if(!weather || Date.now()-lastFetch>60000){
+    lastFetch=Date.now();
+    fetchData(pos.lat,pos.lon).finally(()=>update());
+  } else {
+    update();
+  }
+}
+
+function gpsErrorMessage(err){
+  if(!err) return 'Ukjent GPS-feil';
+  if(err.code===1) return 'GPS-tillatelse er blokkert';
+  if(err.code===2) return 'GPS-posisjon utilgjengelig';
+  if(err.code===3) return 'GPS tidsavbrudd';
+  return err.message || 'Ukjent GPS-feil';
+}
+
 $('start').onclick=()=>{
   simOn=false;clearInterval(simTimer);
   stopGpsTracking();
   $('sim').textContent='Start demo-sim';
-  $('start').textContent='GPS på';
-  gpsWatchId=navigator.geolocation.watchPosition(p=>{
-    const nw=nearestWater(p.coords.latitude,p.coords.longitude);
-    pos={lat:nw.lat,lon:nw.lon,sog:p.coords.speed||0,cog:p.coords.heading||pos?.cog||180};
-    map.setView([pos.lat,pos.lon],map.getZoom());
-    if(!weather||Date.now()-lastFetch>11000){lastFetch=Date.now();fetchData(pos.lat,pos.lon);}
-    update();
-  },{enableHighAccuracy:true,maximumAge:7000});
+  if(!navigator.geolocation){
+    alert('Denne enheten/nettleseren støtter ikke GPS-posisjon.');
+    setStatus('GPS ikke støttet');
+    return;
+  }
+  $('start').textContent='GPS søker…';
+  setStatus('Søker etter GPS');
+  const gpsOptions={enableHighAccuracy:true,maximumAge:0,timeout:20000};
+
+  // First request one immediate high-accuracy fix, then keep watching.
+  // watchPosition requires arguments in the order (success, error, options).
+  // The previous code accidentally passed the options object as the error
+  // callback, so high-accuracy mode was not reliably enabled.
+  if(typeof navigator.geolocation.getCurrentPosition === 'function'){
+    navigator.geolocation.getCurrentPosition(
+      p=>{ $('start').textContent='GPS på'; applyLiveGpsPosition(p); },
+      err=>{ const msg=gpsErrorMessage(err); $('start').textContent='Start live'; setStatus(msg); alert(`${msg}. Sjekk at nettleseren har posisjonstilgang og at nøyaktig posisjon er aktivert.`); },
+      gpsOptions
+    );
+  }
+
+  gpsWatchId=navigator.geolocation.watchPosition(
+    p=>{ $('start').textContent='GPS på'; applyLiveGpsPosition(p); },
+    err=>{ const msg=gpsErrorMessage(err); setStatus(msg); console.warn('GPS error',err); },
+    gpsOptions
+  );
 };
 $('setBoatStart').onclick=()=>{
   pendingBoatStart=!pendingBoatStart;
@@ -1272,6 +1490,14 @@ $('clear').onclick=()=>{if(confirm('Tøm?')){marks=[];active=0;line={pin:null,bo
 $('useHere').onclick=()=>{if(!pos)return alert('Start GPS eller demo først');marks.push({name:`Merke ${marks.length+1}`,lat:pos.lat,lon:pos.lon,type:'merke'});resetBoatNav();save();render();update();};
 $('setPin').onclick=()=>{if(!pos)return alert('Start GPS eller demo først');line.pin={lat:pos.lat,lon:pos.lon};save();render();};
 $('setBoat').onclick=()=>{if(!pos)return alert('Start GPS eller demo først');line.boat={lat:pos.lat,lon:pos.lon};save();render();};
+if($('searchPlace')) $('searchPlace').onclick=()=>searchPlaceOrCoordinate();
+if($('placeSearch')) $('placeSearch').onkeydown=e=>{ if(e.key==='Enter') searchPlaceOrCoordinate(); };
+if($('searchResults')) $('searchResults').onchange=()=>focusSearchResult(selectedSearchResult());
+if($('centerSearch')) $('centerSearch').onclick=()=>focusSearchResult(selectedSearchResult());
+if($('addSearchStart')) $('addSearchStart').onclick=()=>addSelectedSearchAs('1');
+if($('addSearchBuoy')) $('addSearchBuoy').onclick=()=>addSelectedSearchAs('2');
+if($('addSearchFinish')) $('addSearchFinish').onclick=()=>addSelectedSearchAs('3');
+if($('importCoordCourse')) $('importCoordCourse').onclick=()=>importCoordinateCourse();
 // When the user selects a course file (GPX, KML, GeoJSON), parse it and
 // populate the marks array. The first coordinate becomes the start, the
 // last becomes the finish (mål) and the intermediate points are marked as

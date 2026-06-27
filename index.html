@@ -8,12 +8,12 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="Regatta">
   <!-- Preserve manifest and icons exactly as in the original minified file -->
-  <link rel="manifest" href="manifest.webmanifest?v=2026-05-30-v3">
+  <link rel="manifest" href="manifest.webmanifest?v=2026-06-24-v5-map-search">
   <link rel="icon" href="icon-192.png">
   <link rel="apple-touch-icon" href="icon-192.png">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <title>Never 2 late Regatta v3</title>
-  <link rel="stylesheet" href="style.css?v=2026-05-30-v3">
+  <link rel="stylesheet" href="style.css?v=2026-06-24-v5-map-search">
 </head>
 <body>
 <header>
@@ -27,6 +27,15 @@
     <button id="sample" class="secondary">Hankø demo</button>
     <button id="setBoatStart" class="secondary">Endre båtens startpunkt</button>
     <button id="install" class="secondary" hidden>Installer app</button>
+    <label class="map-select-label">Kart
+      <select id="mapType">
+        <option value="standard">Standard</option>
+        <option value="satellite">Satellitt</option>
+        <option value="hybrid">Hybrid</option>
+        <option value="marine">Marin</option>
+        <option value="topo">Topografisk</option>
+      </select>
+    </label>
   </section>
   <section class="mapwrap">
     <div id="map"></div>
@@ -58,6 +67,28 @@
   <section class="panel" id="timediffPanel">
     <h3>Tidsforskjell</h3>
     <p id="timediff" class="muted">–</p>
+  </section>
+  <section class="panel">
+    <h3>Søk / koordinater</h3>
+    <p class="muted">Søk etter navn på holmer, skjær, grunner eller lim inn koordinater. Eksempel: <b>59.2051, 10.7912</b>.</p>
+    <div class="search-grid">
+      <input id="placeSearch" type="text" placeholder="Navn eller koordinater">
+      <button id="searchPlace" class="secondary">Søk</button>
+    </div>
+    <select id="searchResults" class="wide-select">
+      <option value="">Ingen søkeresultat valgt</option>
+    </select>
+    <div class="buttons">
+      <button id="addSearchStart" class="secondary">Legg til som start</button>
+      <button id="addSearchBuoy" class="secondary">Legg til som rundingsbøye</button>
+      <button id="addSearchFinish" class="secondary">Legg til som mål</button>
+      <button id="centerSearch" class="secondary">Vis på kart</button>
+    </div>
+    <textarea id="coordCourse" rows="4" placeholder="Lim inn hel bane: ett punkt per linje, f.eks. 59.2051,10.7912"></textarea>
+    <div class="buttons">
+      <button id="importCoordCourse" class="secondary">Importer koordinatliste som bane</button>
+    </div>
+    <p id="searchStatus" class="muted">Søk bruker koordinater direkte eller OpenStreetMap/Nominatim for stedsnavn.</p>
   </section>
   <section class="panel">
     <h3>Bane fra kart</h3>
@@ -111,6 +142,6 @@
   </section>
 </main>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="app.js?v=2026-05-30-v3"></script>
+<script src="app.js?v=2026-06-24-v5-map-search"></script>
 </body>
 </html>
