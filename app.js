@@ -9,9 +9,13 @@ let gpsWatchId = null;
 let routeLine = null, redRouteLine = null, overlays = [], tackOverlays = [];
 let searchResultsData = [];
 let lastTacticalPlan = {turns: [], mode: 'direct', next: null};
+// Lock the tactical route so tack/gybe points do not jump every time the
+// boat position updates.  The lock is reset only when the active mark,
+// weather signature or polar setup changes enough to justify a new plan.
+let tacticalRouteLock = { key: '', route: null, turns: [], mode: 'direct', nextIdx: 1, createdAt: 0, pending: false };
 let boatNav = { active: null, route: [], idx: 1, pending: false, source: 'client' };
 let recommendedNav = { key: '', route: null, pending: false, error: null, t: 0 };
-const APP_VERSION = '2026-06-24-v8-start-leg-label';
+const APP_VERSION = '2026-06-24-v9-stable-tactics';
 const SAME_ORIGIN_ROUTE_API = ['localhost','127.0.0.1'].includes(location.hostname) || !/github\.io$/i.test(location.hostname)
   ? location.origin
   : '';
@@ -919,6 +923,7 @@ function safeStepToward(from,target,meters,preferredBrg=null){
 
 function resetBoatNav(){
   boatNav = { active: null, route: [], idx: 1, pending: false, source: 'client', rounding: false, roundingPlanned: false };
+  tacticalRouteLock = { key: '', route: null, turns: [], mode: 'direct', nextIdx: 1, createdAt: 0, pending: false };
 }
 
 function navTargetForMark(mark){
@@ -1112,16 +1117,91 @@ function safeProjection(start,course,maxMeters=850){
 
 function routeKeyForRecommendation(target, rec){
   const w=weather?.wind||{}, m=weather?.marine||{};
+  // Important: do NOT include exact boat position in this key.  The old
+  // implementation did that, which made the red tactical route and all SLÅ/GYB
+  // points jump every time GPS updated.  We instead quantize weather and
+  // setup values so the plan is stable and only recalculated when the active
+  // mark, polar setup or weather changes enough to matter tactically.
+  const q=(v,step=1)=>Number.isFinite(v)?Math.round(v/step)*step:0;
   return [
-    pos?.lat?.toFixed(5), pos?.lon?.toFixed(5),
-    target.lat.toFixed(5), target.lon.toFixed(5),
+    'stable-v9',
     active, marks.length,
-    Math.round(rec.course||0),
-    Math.round(w.wind_direction_10m??0), Math.round((w.wind_speed_10m??0)*10),
-    Math.round(m.ocean_current_direction??0), Math.round((m.ocean_current_velocity??0)*100),
-    Math.round((m.wave_height??0)*10)
+    target.lat.toFixed(5), target.lon.toFixed(5),
+    currentPolarMode(),
+    q(w.wind_direction_10m,10),
+    q(w.wind_speed_10m,0.5),
+    q(m.ocean_current_direction,15),
+    q(m.ocean_current_velocity,0.1),
+    q(m.wave_height,0.2)
   ].join('|');
 }
+
+function distancePointToRouteMeters(lat,lon,route){
+  if(!Array.isArray(route)||route.length<2)return Infinity;
+  let best=Infinity;
+  const p={lat,lon};
+  for(let i=1;i<route.length;i++){
+    const a=route[i-1], b=route[i];
+    const ab=distance(a[0],a[1],b[0],b[1]);
+    if(ab<1)continue;
+    const ap=distance(a[0],a[1],lat,lon);
+    const bp=distance(lat,lon,b[0],b[1]);
+    // Heron's formula for cross-track approximation in meters.
+    const s=(ab+ap+bp)/2;
+    const area=Math.max(0,s*(s-ab)*(s-ap)*(s-bp));
+    const h=2*Math.sqrt(area)/ab;
+    // If projection falls outside the segment, use endpoint distance.
+    const along=(ap*ap + ab*ab - bp*bp)/(2*ab);
+    const d=(along<0||along>ab)?Math.min(ap,bp):h;
+    if(d<best)best=d;
+  }
+  return best;
+}
+
+function routeNeedsReplan(key, lockedRoute){
+  if(!Array.isArray(lockedRoute)||lockedRoute.length<2)return true;
+  if(tacticalRouteLock.key!==key)return true;
+  // Keep tack points stable. Replan due to off-route only if the boat is
+  // clearly far away and the plan is not brand new; this avoids jitter while
+  // still recovering if the sailor deliberately sails a very different line.
+  if(pos && Date.now()-(tacticalRouteLock.createdAt||0)>90000){
+    const off=distancePointToRouteMeters(pos.lat,pos.lon,lockedRoute);
+    if(off>280)return true;
+  }
+  return false;
+}
+
+function advanceLockedTacticalProgress(route){
+  if(!pos||!Array.isArray(route)||route.length<2)return 1;
+  let idx=Math.max(1,tacticalRouteLock.nextIdx||1);
+  while(idx<route.length-1 && distance(pos.lat,pos.lon,route[idx][0],route[idx][1])<75){
+    idx++;
+  }
+  tacticalRouteLock.nextIdx=idx;
+  return idx;
+}
+
+function displayLockedTacticalRoute(route){
+  if(!pos||!Array.isArray(route)||route.length<2)return route||[];
+  const idx=advanceLockedTacticalProgress(route);
+  // Draw from current boat position to the next locked point, then keep the
+  // remaining locked geometry unchanged.  Only the first segment follows the
+  // moving boat; the SLÅ/GYB points themselves stay fixed.
+  return [[pos.lat,pos.lon], ...route.slice(idx)];
+}
+
+function annotateTurnIndexes(route, turns){
+  if(!Array.isArray(route)||!Array.isArray(turns))return turns||[];
+  return turns.map(t=>{
+    let bestIdx=1, best=Infinity;
+    for(let i=1;i<route.length-1;i++){
+      const d=distance(t.lat,t.lon,route[i][0],route[i][1]);
+      if(d<best){best=d;bestIdx=i;}
+    }
+    return {...t, idx: bestIdx};
+  });
+}
+
 
 function solveTwoCourseDistances(targetCourse, legMeters, courseA, courseB){
   // Solve: leg vector = a * unit(courseA) + b * unit(courseB).
@@ -1221,48 +1301,113 @@ function makeTacticalRoute(baseRoute, rec){
     for(let j=1;j<part.points.length;j++)route.push(part.points[j]);
     turns.push(...part.turns);
   }
-  return {route,turns,mode};
+  return {route,turns:annotateTurnIndexes(route,turns),mode};
 }
+
 
 function recommendedRouteTo(target){
   const from={lat:pos.lat,lon:pos.lon};
   const rec=recommendedCourseTo(target);
   const safe=safeProjection(from,rec.course,900);
   const fallbackPlan=makeTacticalRoute(safe,rec);
-  if(!ROUTE_API_URL){
-    lastTacticalPlan={turns:fallbackPlan.turns,mode:fallbackPlan.mode,next:fallbackPlan.route?.[1]||null};
-    return fallbackPlan.route;
+  const key=routeKeyForRecommendation(target,rec);
+
+  function useLockedPlan(plan){
+    const idx=advanceLockedTacticalProgress(plan.route);
+    const visibleRoute=displayLockedTacticalRoute(plan.route);
+    const visibleTurns=(plan.turns||[]).filter(t => (t.idx??1) >= idx);
+    lastTacticalPlan={
+      turns:visibleTurns,
+      mode:plan.mode||'direct',
+      next:visibleRoute?.[1]||null,
+      locked:true
+    };
+    return visibleRoute;
   }
 
-  const key=routeKeyForRecommendation(target,rec);
+  // If we already have a valid locked route, keep it.  This is the main fix
+  // for the jumping SLÅ/GYB points seen during live GPS updates.
+  if(!routeNeedsReplan(key, tacticalRouteLock.route)){
+    return useLockedPlan(tacticalRouteLock);
+  }
+
+  // If we have no backend route API, lock the local fallback plan.
+  if(!ROUTE_API_URL){
+    tacticalRouteLock={
+      key,
+      route:fallbackPlan.route,
+      turns:fallbackPlan.turns||[],
+      mode:fallbackPlan.mode||'direct',
+      nextIdx:1,
+      createdAt:Date.now(),
+      pending:false
+    };
+    return useLockedPlan(tacticalRouteLock);
+  }
+
+  // If a server-computed route for the same stable key already exists, lock it.
   if(recommendedNav.key===key && Array.isArray(recommendedNav.route)){
-    lastTacticalPlan={
+    tacticalRouteLock={
+      key,
+      route:recommendedNav.route,
       turns:recommendedNav.turns||[],
       mode:recommendedNav.mode||'direct',
-      next:recommendedNav.route?.[1]||null
+      nextIdx:Math.max(1,tacticalRouteLock.nextIdx||1),
+      createdAt:tacticalRouteLock.createdAt||Date.now(),
+      pending:false
     };
-    return recommendedNav.route;
+    return useLockedPlan(tacticalRouteLock);
   }
+
+  // While a new route is being calculated, keep drawing the previous locked
+  // plan if it exists.  This prevents visual jumping while async routing is in
+  // flight.
+  if(Array.isArray(tacticalRouteLock.route) && tacticalRouteLock.route.length>1 && tacticalRouteLock.key){
+    if(!recommendedNav.pending || recommendedNav.key!==key){
+      recommendedNav={key,route:recommendedNav.route,pending:true,error:null,t:Date.now(),turns:recommendedNav.turns||[],mode:recommendedNav.mode||'direct'};
+      fetchServerRoute(from, navTargetForMark(target), {clearance:28, grid:42, margin:1600})
+        .then(data=>{
+          if(recommendedNav.key!==key)return;
+          const tactical=makeTacticalRoute(data.route,rec);
+          recommendedNav={key,route:tactical.route,turns:tactical.turns,mode:tactical.mode,pending:false,error:null,t:Date.now()};
+          tacticalRouteLock={key,route:tactical.route,turns:tactical.turns,mode:tactical.mode,nextIdx:1,createdAt:Date.now(),pending:false};
+          renderRecommended();
+        })
+        .catch(err=>{
+          console.warn('Recommended server route failed',err);
+          if(recommendedNav.key!==key)return;
+          recommendedNav={key,route:fallbackPlan.route,turns:fallbackPlan.turns,mode:fallbackPlan.mode,pending:false,error:err.message||String(err),t:Date.now()};
+          tacticalRouteLock={key,route:fallbackPlan.route,turns:fallbackPlan.turns,mode:fallbackPlan.mode,nextIdx:1,createdAt:Date.now(),pending:false};
+          renderRecommended();
+        });
+    }
+    return useLockedPlan(tacticalRouteLock);
+  }
+
+  // No locked route yet: start a server route request and lock a safe local
+  // fallback immediately so the sailor has stable guidance right away.
+  tacticalRouteLock={key,route:fallbackPlan.route,turns:fallbackPlan.turns||[],mode:fallbackPlan.mode||'direct',nextIdx:1,createdAt:Date.now(),pending:true};
   if(!recommendedNav.pending || recommendedNav.key!==key){
-    recommendedNav={key,route:recommendedNav.route,pending:true,error:null,t:Date.now(),turns:recommendedNav.turns||[],mode:recommendedNav.mode||'direct'};
+    recommendedNav={key,route:null,pending:true,error:null,t:Date.now(),turns:[],mode:'direct'};
     fetchServerRoute(from, navTargetForMark(target), {clearance:28, grid:42, margin:1600})
       .then(data=>{
         if(recommendedNav.key!==key)return;
         const tactical=makeTacticalRoute(data.route,rec);
         recommendedNav={key,route:tactical.route,turns:tactical.turns,mode:tactical.mode,pending:false,error:null,t:Date.now()};
+        tacticalRouteLock={key,route:tactical.route,turns:tactical.turns,mode:tactical.mode,nextIdx:1,createdAt:Date.now(),pending:false};
         renderRecommended();
       })
       .catch(err=>{
         console.warn('Recommended server route failed',err);
         if(recommendedNav.key!==key)return;
         recommendedNav={key,route:fallbackPlan.route,turns:fallbackPlan.turns,mode:fallbackPlan.mode,pending:false,error:err.message||String(err),t:Date.now()};
+        tacticalRouteLock={key,route:fallbackPlan.route,turns:fallbackPlan.turns,mode:fallbackPlan.mode,nextIdx:1,createdAt:Date.now(),pending:false};
         renderRecommended();
       });
   }
-  const route=Array.isArray(recommendedNav.route) ? recommendedNav.route : fallbackPlan.route;
-  lastTacticalPlan={turns:recommendedNav.turns||fallbackPlan.turns||[],mode:recommendedNav.mode||fallbackPlan.mode||'direct',next:route?.[1]||null};
-  return route;
+  return useLockedPlan(tacticalRouteLock);
 }
+
 
 function renderRecommended(){
   if(redRouteLine){redRouteLine.remove();redRouteLine=null;}
@@ -1808,6 +1953,17 @@ if(importInput && typeof importInput.addEventListener === 'function'){
     }
   });
 }
+
+const refreshTacticsBtn = typeof document !== 'undefined' ? document.getElementById('refreshTactics') : null;
+if(refreshTacticsBtn && typeof refreshTacticsBtn.addEventListener === 'function'){
+  refreshTacticsBtn.addEventListener('click', ()=>{
+    tacticalRouteLock = { key: '', route: null, turns: [], mode: 'direct', nextIdx: 1, createdAt: 0, pending: false };
+    recommendedNav = { key: '', route: null, pending: false, error: null, t: 0 };
+    renderRecommended();
+    if(pos&&weather)update();
+  });
+}
+
 if($('polarMode')){
   $('polarMode').value=currentPolarMode();
   $('polarMode').onchange=()=>{

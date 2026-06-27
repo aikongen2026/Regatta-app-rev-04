@@ -1,10 +1,10 @@
-const CACHE = 'regatta-pwa-2026-06-24-v8-start-leg-label';
+const CACHE = 'regatta-pwa-2026-06-24-v9-stable-tactics';
 const ASSETS = [
   './',
   './index.html',
-  './app.js?v=2026-06-24-v8-start-leg-label',
-  './style.css?v=2026-06-24-v8-start-leg-label',
-  './manifest.webmanifest?v=2026-06-24-v8-start-leg-label',
+  './app.js?v=2026-06-24-v9-stable-tactics',
+  './style.css?v=2026-06-24-v9-stable-tactics',
+  './manifest.webmanifest?v=2026-06-24-v9-stable-tactics',
   './icon-192.png',
   './icon-512.png'
 ];

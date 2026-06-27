@@ -1,0 +1,10 @@
+REGATTA APP V9 - STABIL TAKTISK RUTE
+
+Endringer:
+- SLÅ/GYB-punkter låses nå og flytter seg ikke ved hver GPS-oppdatering.
+- Taktisk rute beregnes på nytt bare når aktivt merke, polarvalg eller vær/strøm endrer seg nok.
+- Første røde segment følger fortsatt båten, men de taktiske vendepunktene ligger faste.
+- Appen kan replanlegge hvis båten kommer tydelig langt vekk fra anbefalt rute etter en stund.
+- Ny knapp: "Oppdater taktisk rute" for manuell replanlegging.
+- Cache-versjon oppdatert til v9 slik at PWA henter ny kode.
+- Tester kjørt og passerer.
