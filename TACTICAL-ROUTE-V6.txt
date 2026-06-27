@@ -1,0 +1,9 @@
+# V6 taktisk anbefalt rute
+
+Endringer:
+- Rød anbefalt rute er ikke lenger bare rett/trygg linje mot neste merke.
+- Når vind/polar tilsier at direkte kurs ikke er raskest eller ikke seilbar, beregnes taktisk kryss/gyb-rute.
+- Røde SLÅ/GYB-merker vises på kartet med anbefalt neste kurs etter vendingen.
+- Live fart og live kurs vises i hovedpanelet.
+- GPS-, karttype- og søk/koordinat-funksjonene fra tidligere versjoner er beholdt.
+- Appen faller tilbake til trygg sjørute hvis en matematisk ideell slaglinje ville krysse land/kystmasken.

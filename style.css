@@ -292,3 +292,31 @@ header h1 small{font-size:.72em;color:#93c5fd;background:#0f2a44;border-radius:8
     justify-content: space-between;
   }
 }
+
+
+.tackIcon {
+  background: transparent;
+  border: none;
+}
+.tackLabel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-width: 42px;
+  padding: 3px 5px;
+  border-radius: 8px;
+  background: rgba(239, 68, 68, .95);
+  color: #fff;
+  border: 1px solid rgba(255,255,255,.85);
+  box-shadow: 0 4px 12px rgba(0,0,0,.35);
+  font-size: 10px;
+  line-height: 1.05;
+  font-weight: 800;
+  text-shadow: 0 1px 1px rgba(0,0,0,.3);
+}
+.tackLabel span {
+  font-size: 9px;
+  font-weight: 700;
+  opacity: .95;
+}
