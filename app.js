@@ -15,7 +15,7 @@ let lastTacticalPlan = {turns: [], mode: 'direct', next: null};
 let tacticalRouteLock = { key: '', route: null, turns: [], mode: 'direct', nextIdx: 1, createdAt: 0, pending: false };
 let boatNav = { active: null, route: [], idx: 1, pending: false, source: 'client' };
 let recommendedNav = { key: '', route: null, pending: false, error: null, t: 0 };
-const APP_VERSION = '2026-06-24-v9-stable-tactics';
+const APP_VERSION = '2026-06-24-v10-navionics-gpx';
 const SAME_ORIGIN_ROUTE_API = ['localhost','127.0.0.1'].includes(location.hostname) || !/github\.io$/i.test(location.hostname)
   ? location.origin
   : '';
@@ -1868,10 +1868,132 @@ $('sample').onclick=()=>{
   resetBoatNav();
   save();update();
 };
+
+// Build a Navionics-compatible GPX export from the current tactical red route
+// and the full race course. Navionics Boating can import GPX routes and
+// waypoints when the file is opened/shared on mobile.
+function xmlEscape(value){
+  return String(value ?? '').replace(/[<>&'"]/g, ch => ({
+    '<':'&lt;',
+    '>':'&gt;',
+    '&':'&amp;',
+    "'":'&apos;',
+    '"':'&quot;'
+  }[ch]));
+}
+function gpxTime(){
+  try{return new Date().toISOString();}catch{return '';}
+}
+function fmtCoord(n){
+  return Number(n).toFixed(7);
+}
+function tacticalRouteForExport(){
+  if(pos && marks.length && active < marks.length){
+    const target=marks[active];
+    let route=(Array.isArray(tacticalRouteLock.route) && tacticalRouteLock.route.length>1) ? tacticalRouteLock.route : null;
+    if(!route){
+      try{ route=recommendedRouteTo(target); }catch{ route=null; }
+    }
+    if(Array.isArray(route) && route.length>1) return route;
+  }
+  return [];
+}
+function exportRoutePointXml(point, name){
+  const [lat,lon]=point;
+  return `    <rtept lat="${fmtCoord(lat)}" lon="${fmtCoord(lon)}"><name>${xmlEscape(name)}</name></rtept>`;
+}
+function buildNavionicsGpx(){
+  const tactical=tacticalRouteForExport();
+  const fullCourse=marks.map(m=>[m.lat,m.lon]).filter(p=>Number.isFinite(p[0])&&Number.isFinite(p[1]));
+  const turns=lastTacticalPlan.turns || tacticalRouteLock.turns || [];
+  const parts=[];
+  parts.push('<?xml version="1.0" encoding="UTF-8"?>');
+  parts.push('<gpx version="1.1" creator="Never 2 late Regatta" xmlns="http://www.topografix.com/GPX/1/1">');
+  parts.push('  <metadata>');
+  parts.push('    <name>Never 2 late Regatta eksport</name>');
+  parts.push(`    <time>${gpxTime()}</time>`);
+  parts.push('  </metadata>');
+
+  // Waypoints: current boat position, all rounding marks and each tactical tack/gybe point.
+  if(pos && Number.isFinite(pos.lat) && Number.isFinite(pos.lon)){
+    parts.push(`  <wpt lat="${fmtCoord(pos.lat)}" lon="${fmtCoord(pos.lon)}"><name>Båt nå</name><sym>Boat</sym></wpt>`);
+  }
+  marks.forEach((m,i)=>{
+    if(Number.isFinite(m.lat)&&Number.isFinite(m.lon)){
+      parts.push(`  <wpt lat="${fmtCoord(m.lat)}" lon="${fmtCoord(m.lon)}"><name>${xmlEscape(`${i+1}. ${m.name}`)}</name><type>${xmlEscape(m.type||'merke')}</type></wpt>`);
+    }
+  });
+  turns.forEach((t,i)=>{
+    if(Number.isFinite(t.lat)&&Number.isFinite(t.lon)){
+      parts.push(`  <wpt lat="${fmtCoord(t.lat)}" lon="${fmtCoord(t.lon)}"><name>${xmlEscape(`${t.label||'Vending'} ${i+1} ${t.course||''}°`)}</name><type>tactical-turn</type></wpt>`);
+    }
+  });
+
+  // Route 1: active red tactical route.
+  if(tactical.length>1){
+    parts.push('  <rte>');
+    parts.push('    <name>Aktiv rød taktisk rute</name>');
+    tactical.forEach((pt,i)=>{
+      const turn=turns.find(t=>distance(pt[0],pt[1],t.lat,t.lon)<35);
+      const label=i===0 ? 'Båt nå' : turn ? `${turn.label} ${turn.course}°` : (i===tactical.length-1 ? (marks[active]?.name||'Mål') : `Taktisk punkt ${i}`);
+      parts.push(exportRoutePointXml(pt,label));
+    });
+    parts.push('  </rte>');
+    // Add same tactical route as a track as well, because some apps handle tracks better than routes.
+    parts.push('  <trk><name>Aktiv rød taktisk rute spor</name><trkseg>');
+    tactical.forEach(pt=>parts.push(`    <trkpt lat="${fmtCoord(pt[0])}" lon="${fmtCoord(pt[1])}"></trkpt>`));
+    parts.push('  </trkseg></trk>');
+  }
+
+  // Route 2: entire user-defined race course through marks.
+  if(fullCourse.length>1){
+    parts.push('  <rte>');
+    parts.push('    <name>Hele regattabanen</name>');
+    fullCourse.forEach((pt,i)=>parts.push(exportRoutePointXml(pt, `${i+1}. ${marks[i]?.name||'Merke'}`)));
+    parts.push('  </rte>');
+  }
+
+  parts.push('</gpx>');
+  return parts.join('\n');
+}
+async function exportNavionicsGpx(){
+  if(!marks.length && !pos){
+    alert('Ingen bane eller posisjon å eksportere ennå.');
+    return;
+  }
+  const gpx=buildNavionicsGpx();
+  const filename=`never-2-late-regatta-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.gpx`;
+  const blob=new Blob([gpx],{type:'application/gpx+xml'});
+  const file=new File([blob],filename,{type:'application/gpx+xml'});
+  try{
+    if(navigator.share && (!navigator.canShare || navigator.canShare({files:[file]}))){
+      await navigator.share({
+        title:'Never 2 late Regatta GPX',
+        text:'Åpne/importer denne GPX-filen i Navionics Boating.',
+        files:[file]
+      });
+      return;
+    }
+  }catch(err){
+    // If the user cancels sharing, do not also force a download.
+    if(err && (err.name==='AbortError' || err.name==='NotAllowedError')) return;
+    console.warn('GPX share failed, falling back to download',err);
+  }
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;
+  a.download=filename;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(()=>{URL.revokeObjectURL(url); a.remove();},1200);
+  alert('GPX-fil er laget. Åpne filen på mobilen og velg Navionics Boating for import.');
+}
+
 $('clear').onclick=()=>{if(confirm('Tøm?')){marks=[];active=0;line={pin:null,boat:null};resetBoatNav();save();render();update();}};
 $('useHere').onclick=()=>{if(!pos)return alert('Start GPS eller demo først');marks.push({name:`Merke ${marks.length+1}`,lat:pos.lat,lon:pos.lon,type:'merke'});resetBoatNav();save();render();update();};
 $('setPin').onclick=()=>{if(!pos)return alert('Start GPS eller demo først');line.pin={lat:pos.lat,lon:pos.lon};save();render();};
 $('setBoat').onclick=()=>{if(!pos)return alert('Start GPS eller demo først');line.boat={lat:pos.lat,lon:pos.lon};save();render();};
+if($('exportNavionics')) $('exportNavionics').onclick=()=>exportNavionicsGpx();
 if($('searchPlace')) $('searchPlace').onclick=()=>searchPlaceOrCoordinate();
 if($('placeSearch')){
   $('placeSearch').oninput=()=>schedulePlaceSuggestions();
