@@ -15,7 +15,7 @@ let lastTacticalPlan = {turns: [], mode: 'direct', next: null};
 let tacticalRouteLock = { key: '', route: null, turns: [], mode: 'direct', nextIdx: 1, createdAt: 0, pending: false };
 let boatNav = { active: null, route: [], idx: 1, pending: false, source: 'client' };
 let recommendedNav = { key: '', route: null, pending: false, error: null, t: 0 };
-const APP_VERSION = '2026-06-24-v10-navionics-gpx';
+const APP_VERSION = '2026-06-24-v11-navionics-auto-download';
 const SAME_ORIGIN_ROUTE_API = ['localhost','127.0.0.1'].includes(location.hostname) || !/github\.io$/i.test(location.hostname)
   ? location.origin
   : '';
@@ -1961,32 +1961,53 @@ async function exportNavionicsGpx(){
     alert('Ingen bane eller posisjon å eksportere ennå.');
     return;
   }
+
   const gpx=buildNavionicsGpx();
   const filename=`never-2-late-regatta-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.gpx`;
   const blob=new Blob([gpx],{type:'application/gpx+xml'});
-  const file=new File([blob],filename,{type:'application/gpx+xml'});
-  try{
-    if(navigator.share && (!navigator.canShare || navigator.canShare({files:[file]}))){
-      await navigator.share({
-        title:'Never 2 late Regatta GPX',
-        text:'Åpne/importer denne GPX-filen i Navionics Boating.',
-        files:[file]
-      });
-      return;
-    }
-  }catch(err){
-    // If the user cancels sharing, do not also force a download.
-    if(err && (err.name==='AbortError' || err.name==='NotAllowedError')) return;
-    console.warn('GPX share failed, falling back to download',err);
-  }
+
+  // Always trigger a real file download first.  Earlier versions tried to open
+  // the mobile share sheet before downloading, which meant the user sometimes
+  // ended up with no GPX file saved locally.  Navionics can import a GPX file
+  // that is saved on the phone/PC, so the primary behaviour must be download.
   const url=URL.createObjectURL(blob);
   const a=document.createElement('a');
   a.href=url;
   a.download=filename;
+  a.rel='noopener';
+  a.style.display='none';
   document.body.appendChild(a);
+
+  // Some mobile browsers need the click to happen in the same user gesture.
   a.click();
-  setTimeout(()=>{URL.revokeObjectURL(url); a.remove();},1200);
-  alert('GPX-fil er laget. Åpne filen på mobilen og velg Navionics Boating for import.');
+
+  // Keep the object URL alive a little longer on mobile browsers so the
+  // download/open-file handoff has time to start.
+  setTimeout(()=>{URL.revokeObjectURL(url); a.remove();},5000);
+
+  // As a secondary convenience on phones that support Web Share with files,
+  // offer the share sheet after the download has been initiated.  This is not
+  // required for the export to work; the downloaded file is already created.
+  try{
+    if(navigator.share && window.File){
+      const file=new File([blob],filename,{type:'application/gpx+xml'});
+      if(!navigator.canShare || navigator.canShare({files:[file]})){
+        const shouldShare=confirm('GPX-filen lastes ned. Vil du også åpne deling for å sende den til Navionics?');
+        if(shouldShare){
+          await navigator.share({
+            title:'Never 2 late Regatta GPX',
+            text:'Åpne/importer denne GPX-filen i Navionics Boating.',
+            files:[file]
+          });
+        }
+      }
+    }
+  }catch(err){
+    // Download is already started, so sharing errors can be ignored.
+    console.warn('GPX share skipped/failed after download',err);
+  }
+
+  alert('GPX-fil lastes ned. På mobil kan du åpne filen og velge Navionics Boating for import.');
 }
 
 $('clear').onclick=()=>{if(confirm('Tøm?')){marks=[];active=0;line={pin:null,boat:null};resetBoatNav();save();render();update();}};
