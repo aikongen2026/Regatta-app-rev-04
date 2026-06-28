@@ -9,15 +9,19 @@ let pendingBoatStart = false, boatMarker = null, searchMarker = null;
 let gpsWatchId = null;
 let routeLine = null, redRouteLine = null, overlays = [], tackOverlays = [], futureTacticalOverlays = [];
 let searchResultsData = [];
-let lastTacticalPlan = {turns: [], mode: 'direct', next: null};
+let lastTacticalPlan = {turns: [], mode: 'direct', next: null, decision: null};
+let weatherStable = { wind: null, marine: null, t: 0 };
+let trackLog = [];
+let lastTrackLog = 0;
+let raceReportUrl = null;
 let showFullTacticalCourse = localStorage.regattaShowFullTacticalCourse === '1';
 // Lock the tactical route so tack/gybe points do not jump every time the
 // boat position updates.  The lock is reset only when the active mark,
 // weather signature or polar setup changes enough to justify a new plan.
-let tacticalRouteLock = { key: '', route: null, turns: [], mode: 'direct', nextIdx: 1, createdAt: 0, pending: false };
+let tacticalRouteLock = { key: '', route: null, turns: [], mode: 'direct', nextIdx: 1, createdAt: 0, pending: false, decision: null };
 let boatNav = { active: null, route: [], idx: 1, pending: false, source: 'client' };
-let recommendedNav = { key: '', route: null, pending: false, error: null, t: 0 };
-const APP_VERSION = '2026-06-24-v19-orc-polar-verified';
+let recommendedNav = { key: '', route: null, pending: false, error: null, t: 0, decision: null };
+const APP_VERSION = '2026-06-24-v20-eta-start-report';
 const SAME_ORIGIN_ROUTE_API = ['localhost','127.0.0.1'].includes(location.hostname) || !/github\.io$/i.test(location.hostname)
   ? location.origin
   : '';
@@ -216,6 +220,292 @@ function formatDuration(seconds){
   parts.push(`${ss}s`);
   return parts.join(' ');
 }
+
+function angleMeanDeg(a,b,alpha=0.35){
+  if(!Number.isFinite(a))return b;
+  if(!Number.isFinite(b))return a;
+  const delta=diff(b,a);
+  return norm(a + delta*alpha);
+}
+function smoothScalar(prev,next,alpha=0.38,smallStep=0){
+  if(!Number.isFinite(prev))return next;
+  if(!Number.isFinite(next))return prev;
+  const delta=next-prev;
+  if(Math.abs(delta)<=smallStep)return prev;
+  return prev + delta*alpha;
+}
+function stabilizeWeatherPayload(payload){
+  if(!payload)return payload;
+  const prev=weatherStable||{};
+  const wind={...(payload.wind||{})};
+  const marine={...(payload.marine||{})};
+  if(prev.wind){
+    wind.wind_direction_10m=angleMeanDeg(prev.wind.wind_direction_10m, wind.wind_direction_10m, .32);
+    wind.wind_speed_10m=smoothScalar(prev.wind.wind_speed_10m, wind.wind_speed_10m, .35, .15);
+    wind.wind_gusts_10m=smoothScalar(prev.wind.wind_gusts_10m, wind.wind_gusts_10m, .35, .2);
+  }
+  if(prev.marine){
+    marine.ocean_current_direction=angleMeanDeg(prev.marine.ocean_current_direction, marine.ocean_current_direction, .28);
+    marine.ocean_current_velocity=smoothScalar(prev.marine.ocean_current_velocity, marine.ocean_current_velocity, .32, .03);
+    marine.wave_direction=angleMeanDeg(prev.marine.wave_direction, marine.wave_direction, .28);
+    marine.wave_height=smoothScalar(prev.marine.wave_height, marine.wave_height, .32, .05);
+    marine.wave_period=smoothScalar(prev.marine.wave_period, marine.wave_period, .32, .2);
+  }
+  weatherStable={wind,marine,t:Date.now()};
+  return {...payload, wind, marine, stable:true};
+}
+function stabilizeRouteWeatherPoints(points){
+  if(!Array.isArray(points)||!points.length)return points||[];
+  const prev=routeWeatherField.points||[];
+  if(!prev.length)return points;
+  return points.map(p=>{
+    let nearest=null, best=Infinity;
+    for(const q of prev){
+      const d=distance(p.lat,p.lon,q.lat,q.lon);
+      if(d<best){best=d; nearest=q;}
+    }
+    if(!nearest||best>1800)return p;
+    const wind={...(p.wind||{})}, marine={...(p.marine||{})};
+    const pw=nearest.wind||{}, pm=nearest.marine||{};
+    wind.wind_direction_10m=angleMeanDeg(pw.wind_direction_10m,wind.wind_direction_10m,.30);
+    wind.wind_speed_10m=smoothScalar(pw.wind_speed_10m,wind.wind_speed_10m,.34,.15);
+    wind.wind_gusts_10m=smoothScalar(pw.wind_gusts_10m,wind.wind_gusts_10m,.34,.2);
+    marine.ocean_current_direction=angleMeanDeg(pm.ocean_current_direction,marine.ocean_current_direction,.26);
+    marine.ocean_current_velocity=smoothScalar(pm.ocean_current_velocity,marine.ocean_current_velocity,.30,.03);
+    marine.wave_direction=angleMeanDeg(pm.wave_direction,marine.wave_direction,.26);
+    marine.wave_height=smoothScalar(pm.wave_height,marine.wave_height,.30,.05);
+    marine.wave_period=smoothScalar(pm.wave_period,marine.wave_period,.30,.2);
+    return {...p,wind,marine,stabilized:true};
+  });
+}
+function routeTotalDistance(route){
+  if(!Array.isArray(route)||route.length<2)return 0;
+  let total=0;
+  for(let i=1;i<route.length;i++)total+=distance(route[i-1][0],route[i-1][1],route[i][0],route[i][1]);
+  return total;
+}
+function routeDirectPoints(from,to){
+  if(!from||!to)return [];
+  return [[from.lat??from[0],from.lon??from[1]],[to.lat??to[0],to.lon??to[1]]];
+}
+function routeEta(route,{strictDirect=false}={}){
+  if(!Array.isArray(route)||route.length<2)return {seconds:Infinity,totalMeters:0,invalid:true,reason:'Ingen rute'};
+  let seconds=0,total=0,twaSum=0,twsSum=0,count=0,invalidUpwind=false,slowSegments=0;
+  const polar=currentPolar();
+  const mode=currentPolarMode();
+  for(let i=1;i<route.length;i++){
+    const A=route[i-1], B=route[i];
+    const d=distance(A[0],A[1],B[0],B[1]);
+    if(d<1)continue;
+    const brg=bearing(A[0],A[1],B[0],B[1]);
+    const sample=legWeatherSample(A,B);
+    const windFrom=sample?.wind?.wind_direction_10m;
+    const twsKt=kt(sample?.wind?.wind_speed_10m??weather?.wind?.wind_speed_10m??4.7);
+    const marine=sample?.marine||weather?.marine||{};
+    let twa=Number.isFinite(windFrom)?Math.abs(diff(brg,windFrom)):90;
+    const beat=clamp(rowAtTws(polar.beatAngles,twsKt,polar),32,55);
+    const gybe=clamp(rowAtTws(polar.gybeAngles,twsKt,polar),130,178);
+    let boatKt=polarBoatSpeed(twsKt,twa,mode);
+
+    // If "direct" points into the no-go zone, it is not a real navigable
+    // direct route. Penalise it heavily so the ETA comparison chooses tacks.
+    if(strictDirect && Number.isFinite(windFrom) && twa < beat-1){
+      invalidUpwind=true;
+      const vmgKt=rowAtTws(polar.beatVMG,twsKt,polar);
+      const effective=vmgKt*Math.max(.05,Math.cos(rad(beat-twa)));
+      boatKt=Math.min(boatKt*.35,effective);
+      slowSegments++;
+    }
+    // Deep downwind is allowed, but if it is clearly below the polar gybe
+    // optimum, add a small handling/VMG penalty so gybing can win when it should.
+    if(strictDirect && Number.isFinite(windFrom) && twa > gybe+2){
+      boatKt*=.92;
+      slowSegments++;
+    }
+
+    const wave=Number.isFinite(marine.wave_height)?marine.wave_height:0;
+    const wavePenalty=clamp(1 - Math.max(0,wave-.6)*.055 - (twa<70?Math.max(0,wave-.4)*.035:0), .78, 1);
+    const currentAlong=(Number.isFinite(marine.ocean_current_velocity)&&Number.isFinite(marine.ocean_current_direction))
+      ? marine.ocean_current_velocity*Math.cos(rad(diff(marine.ocean_current_direction,brg)))
+      : 0;
+    const sogMs=Math.max(.25, ms(boatKt)*wavePenalty + currentAlong);
+    seconds += d/sogMs;
+    total += d;
+    twaSum += twa; twsSum += twsKt; count++;
+  }
+  return {
+    seconds,
+    totalMeters:total,
+    invalidUpwind,
+    slowSegments,
+    avgTwa:count?twaSum/count:null,
+    avgTwsKt:count?twsSum/count:null,
+    avgSpeedKn:seconds>0?kt(total/seconds):null
+  };
+}
+function etaLabel(eta){
+  return eta&&Number.isFinite(eta.seconds)?formatDuration(eta.seconds):'–';
+}
+function makeRouteDecision({directEta,tacticalEta,mode,turns,directRoute,tacticalRoute}={}){
+  const directSec=directEta?.seconds??Infinity;
+  const tacticalSec=tacticalEta?.seconds??Infinity;
+  const gainSec=directSec-tacticalSec;
+  const gainPct=Number.isFinite(gainSec)&&Number.isFinite(directSec)&&directSec>0 ? gainSec/directSec : 0;
+  const minGainPct=0.055;
+  let chosen='direct', reason='Direkte rute er raskest eller forskjellen er for liten.';
+  let confidence='normal';
+  if(mode!=='direct' && Array.isArray(turns) && turns.length){
+    if(directEta?.invalidUpwind){
+      chosen='tactical';
+      reason='Direkte kurs ligger for nær vinden/no-go. Kryss med SLÅ-punkter er nødvendig.';
+      confidence='høy';
+    }else if(gainPct>=minGainPct && tacticalSec<directSec){
+      chosen='tactical';
+      reason=`Taktisk ${mode==='lens'?'gyb/lens':'kryss'} er beregnet ${Math.round(gainPct*100)} % raskere enn direkte rute.`;
+      confidence=gainPct>.10?'høy':'middels';
+    }else{
+      chosen='direct';
+      reason=`Direkte rute beholdes fordi taktisk rute ikke sparer minst ${Math.round(minGainPct*100)} %.`;
+      confidence='middels';
+    }
+  }else{
+    reason='Direkte kurs ligger innenfor effektiv polarvinkel akkurat nå.';
+  }
+  return {
+    chosen, reason, confidence, mode: chosen==='tactical'?mode:'direct',
+    directEta, tacticalEta, gainSec, gainPct,
+    directRoute, tacticalRoute,
+    directLabel:etaLabel(directEta),
+    tacticalLabel:etaLabel(tacticalEta)
+  };
+}
+function tacticalDecisionText(decision){
+  if(!decision)return 'ETA ikke beregnet ennå.';
+  const gain=Number.isFinite(decision.gainSec)?`${decision.gainSec>=0?'+':'-'}${formatDuration(Math.abs(decision.gainSec))}`:'–';
+  return `Direkte ${decision.directLabel||'–'} · Taktisk ${decision.tacticalLabel||'–'} · Gevinst ${gain}`;
+}
+function tacticalWhyText(decision){
+  return decision?.reason || 'Venter på nok data til å forklare rutevalget.';
+}
+function appendTrackSample(){
+  if(!pos)return;
+  const now=Date.now();
+  if(now-lastTrackLog<5000 && trackLog.length)return;
+  const last=trackLog[trackLog.length-1];
+  if(last && now-lastTrackLog<15000 && distance(last.lat,last.lon,pos.lat,pos.lon)<8)return;
+  const decision=lastTacticalPlan.decision||tacticalRouteLock.decision||null;
+  trackLog.push({
+    t:now, lat:pos.lat, lon:pos.lon,
+    sog:Number.isFinite(pos.sog)?pos.sog:null,
+    cog:Number.isFinite(pos.cog)?pos.cog:null,
+    active, mark:marks[active]?.name||'',
+    windDir:weather?.wind?.wind_direction_10m??null,
+    windSpeed:weather?.wind?.wind_speed_10m??null,
+    currentDir:weather?.marine?.ocean_current_direction??null,
+    currentVel:weather?.marine?.ocean_current_velocity??null,
+    chosen:decision?.chosen||'',
+    reason:decision?.reason||''
+  });
+  if(trackLog.length>5000)trackLog=trackLog.slice(-5000);
+  lastTrackLog=now;
+}
+function buildRaceReportHtml(){
+  const pts=trackLog||[];
+  let sailed=0, maxSpeed=0, speedSum=0, speedCount=0;
+  for(let i=1;i<pts.length;i++)sailed+=distance(pts[i-1].lat,pts[i-1].lon,pts[i].lat,pts[i].lon);
+  pts.forEach(p=>{ if(Number.isFinite(p.sog)){ const k=kt(p.sog); maxSpeed=Math.max(maxSpeed,k); speedSum+=k; speedCount++; }});
+  const start=pts[0]?.t, end=pts.at(-1)?.t;
+  const duration=start&&end?formatDuration((end-start)/1000):'–';
+  const rows=pts.filter((_,i)=>i%Math.max(1,Math.floor(pts.length/60))===0).map(p=>`<tr><td>${new Date(p.t).toLocaleTimeString('no-NO')}</td><td>${p.mark||''}</td><td>${Number.isFinite(p.sog)?kt(p.sog).toFixed(1):'–'} kn</td><td>${Number.isFinite(p.cog)?Math.round(p.cog)+'°':'–'}</td><td>${p.chosen||'–'}</td><td>${esc(p.reason||'')}</td></tr>`).join('');
+  const markRows=marks.map((m,i)=>`<tr><td>${i+1}</td><td>${esc(m.name)}</td><td>${esc(m.type||'')}</td><td>${m.lat.toFixed(5)}, ${m.lon.toFixed(5)}</td></tr>`).join('');
+  const html=`<!doctype html><html lang="no"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Seilasrapport Never 2 late</title><style>
+    body{font-family:system-ui,-apple-system,sans-serif;margin:0;padding:24px;background:#0f172a;color:#e2e8f0}
+    h1,h2{margin:.2rem 0 .7rem} .card{background:#1e293b;border:1px solid #334155;border-radius:14px;padding:16px;margin:0 0 14px}
+    table{width:100%;border-collapse:collapse;font-size:14px}td,th{border-bottom:1px solid #334155;padding:7px;text-align:left}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}.big{font-size:22px;font-weight:800}.muted{color:#94a3b8}
+  </style></head><body>
+    <h1>Seilasrapport – Never 2 late Regatta</h1>
+    <p class="muted">Generert ${new Date().toLocaleString('no-NO')} fra lokale data i nettleseren.</p>
+    <section class="card grid">
+      <div><span class="muted">Varighet</span><div class="big">${duration}</div></div>
+      <div><span class="muted">Seilt distanse</span><div class="big">${(sailed/1852).toFixed(2)} nm</div></div>
+      <div><span class="muted">Snittfart</span><div class="big">${speedCount?(speedSum/speedCount).toFixed(1):'–'} kn</div></div>
+      <div><span class="muted">Maksfart</span><div class="big">${maxSpeed.toFixed(1)} kn</div></div>
+      <div><span class="muted">Polar</span><div class="big">${esc(currentPolar().label)}</div></div>
+      <div><span class="muted">Sporpunkter</span><div class="big">${pts.length}</div></div>
+    </section>
+    <section class="card"><h2>Bane</h2><table><thead><tr><th>#</th><th>Navn</th><th>Type</th><th>Koordinat</th></tr></thead><tbody>${markRows||'<tr><td colspan="4">Ingen bane</td></tr>'}</tbody></table></section>
+    <section class="card"><h2>Taktikk og rutevalg</h2><p class="muted">Rapporten viser et utvalg loggpunkter, slik at hovedsiden ikke blir overfylt.</p><table><thead><tr><th>Tid</th><th>Aktiv merke</th><th>Fart</th><th>Kurs</th><th>Valg</th><th>Forklaring</th></tr></thead><tbody>${rows||'<tr><td colspan="6">Ingen logg ennå</td></tr>'}</tbody></table></section>
+  </body></html>`;
+  return html;
+}
+function openRaceReport(){
+  const html=buildRaceReportHtml();
+  const blob=new Blob([html],{type:'text/html'});
+  if(raceReportUrl)URL.revokeObjectURL(raceReportUrl);
+  raceReportUrl=URL.createObjectURL(blob);
+  const link=$('raceReportLink');
+  if(link){ link.href=raceReportUrl; link.download='never-2-late-seilasrapport.html'; }
+  window.open(raceReportUrl,'_blank','noopener');
+}
+function updateStartModePanel(){
+  const status=$('startModeStatus'), favor=$('startLineFavor'), ttl=$('startTimeToLine'), burn=$('startBurnTime'), sug=$('startSuggestion');
+  if(!status&&!favor&&!ttl&&!burn&&!sug)return;
+  if(!line.pin||!line.boat){
+    if(status)status.textContent='Sett startlinje først';
+    if(favor)favor.textContent='–';
+    if(ttl)ttl.textContent='–';
+    if(burn)burn.textContent='–';
+    if(sug)sug.textContent='Sett pinne og bøye med knappene under Startlinje.';
+    return;
+  }
+  const pin=[line.pin.lat,line.pin.lon], boatEnd=[line.boat.lat,line.boat.lon];
+  const len=distance(pin[0],pin[1],boatEnd[0],boatEnd[1]);
+  if(status)status.textContent=`Startlinje ${Math.round(len)} m`;
+  const windFrom=weather?.wind?.wind_direction_10m;
+  let favored='–', advantage=0;
+  if(Number.isFinite(windFrom)){
+    const midLat=(pin[0]+boatEnd[0])/2, midLon=(pin[1]+boatEnd[1])/2;
+    const ref=dest(midLat,midLon,windFrom,100);
+    const projSign=(p)=>{
+      const d=distance(midLat,midLon,p[0],p[1]);
+      const b=bearing(midLat,midLon,p[0],p[1]);
+      return d*Math.cos(rad(diff(windFrom,b)));
+    };
+    const pinProj=projSign(pin), boatProj=projSign(boatEnd);
+    favored=pinProj>boatProj?'Pinne':'Bøye';
+    advantage=Math.abs(pinProj-boatProj);
+  }
+  if(favor)favor.textContent=Number.isFinite(windFrom)?`${favored} +${Math.round(advantage)} m`:'Mangler vind';
+  if(pos){
+    // perpendicular distance to line, approximated by closest of 15 samples along the line
+    let best=Infinity;
+    for(let i=0;i<=15;i++){
+      const brgLine=bearing(pin[0],pin[1],boatEnd[0],boatEnd[1]);
+      const q=dest(pin[0],pin[1],brgLine,len*(i/15));
+      best=Math.min(best,distance(pos.lat,pos.lon,q.lat,q.lon));
+    }
+    const speed=Number.isFinite(pos.sog)&&pos.sog>.2?pos.sog:ms(+$('simSpeed').value||5.5);
+    const secs=best/Math.max(.2,speed);
+    if(ttl)ttl.textContent=`${formatDuration(secs)} · ${Math.round(best)} m`;
+    const st=$('startTime')?.value;
+    if(st){
+      const [hh,mm]=st.split(':').map(Number);
+      const now=new Date();
+      const target=new Date(now);
+      target.setHours(hh||0,mm||0,0,0);
+      if(target.getTime()<now.getTime()-60000)target.setDate(target.getDate()+1);
+      const left=(target.getTime()-now.getTime())/1000;
+      const diffSec=left-secs;
+      if(burn)burn.textContent=diffSec>=0?`Brenn ${formatDuration(diffSec)}`:`Sen ${formatDuration(Math.abs(diffSec))}`;
+      if(sug)sug.textContent=diffSec>=20?`Hold igjen. Sikt mot ${favored} ende hvis mulig.`:diffSec<-10?`Du er sen til linjen. Seil direkte mot beste ende.`:`Timing bra. Hold fart og fri vind.`;
+    }else{
+      if(burn)burn.textContent='Sett starttid';
+      if(sug)sug.textContent=`Favorisert ende: ${favored}.`;
+    }
+  }
+}
+
 
 // Extract a list of [lat, lon] pairs from a GeoJSON object. Supports
 // FeatureCollection, Feature, LineString, MultiLineString, Polygon,
@@ -942,12 +1232,13 @@ function requestRouteWeatherField(route){
   routeWeatherFetchInFlight=true;
   const finish=(rows=[])=>{
     if(rows.length){
-      routeWeatherField={key,points:rows.map((r,i)=>({lat:pts[i].lat,lon:pts[i].lon,wind:r.wind||weather?.wind||{},marine:r.marine||weather?.marine||{}})),sig:'',t:Date.now()};
+      const rawPoints=rows.map((r,i)=>({lat:pts[i].lat,lon:pts[i].lon,wind:r.wind||weather?.wind||{},marine:r.marine||weather?.marine||{}}));
+      const stablePoints=stabilizeRouteWeatherPoints(rawPoints);
+      routeWeatherField={key,points:stablePoints,sig:'',t:Date.now()};
       routeWeatherField.sig=weatherSignatureFromRows(routeWeatherField.points);
       // Do not unlock/re-render the red tactical route just because fresh
-      // weather samples arrive.  The samples are used the next time a plan is
-      // deliberately recalculated, but the current SLÅ/GYB-points must remain
-      // navigable and stable during live sailing.
+      // weather samples arrive.  The samples are filtered and used the next
+      // time a plan is deliberately recalculated, so SLÅ/GYB remains stable.
       updateTacticalPanel(tacticalRouteLock.route);
     }
   };
@@ -1061,7 +1352,8 @@ function safeStepToward(from,target,meters,preferredBrg=null){
 
 function resetBoatNav(){
   boatNav = { active: null, route: [], idx: 1, pending: false, source: 'client', rounding: false, roundingPlanned: false };
-  tacticalRouteLock = { key: '', route: null, turns: [], mode: 'direct', nextIdx: 1, createdAt: 0, pending: false };
+  tacticalRouteLock = { key: '', route: null, turns: [], mode: 'direct', nextIdx: 1, createdAt: 0, pending: false, decision: null };
+  recommendedNav = { key: '', route: null, pending: false, error: null, t: 0, decision: null };
 }
 
 function navTargetForMark(mark){
@@ -1263,7 +1555,7 @@ function routeKeyForRecommendation(target, rec){
   // changes or when the user presses "Oppdater taktisk rute".
   const q=(v,step=1)=>Number.isFinite(v)?Math.round(v/step)*step:0;
   return [
-    'stable-v15',
+    'stable-v20',
     active, marks.length,
     target.lat.toFixed(5), target.lon.toFixed(5),
     currentPolarMode(),
@@ -1311,7 +1603,11 @@ function updateTacticalPanel(route){
   const offEl=$('tacticalOffRoute');
   const dataEl=$('tacticalDataStatus');
   const chartEl=$('tacticalMarineStatus');
+  const choiceEl=$('tacticalChoice');
+  const etaEl=$('tacticalEta');
+  const whyEl=$('tacticalWhy');
   const activeMap=localStorage.regattaMapType || 'standard';
+  const decision=lastTacticalPlan.decision||tacticalRouteLock.decision||recommendedNav.decision||null;
   if(lockEl){
     const locked=Array.isArray(tacticalRouteLock.route)&&tacticalRouteLock.route.length>1;
     const age=locked?formatAge(Date.now()-(tacticalRouteLock.createdAt||Date.now())):'–';
@@ -1332,7 +1628,8 @@ function updateTacticalPanel(route){
   }
   if(dataEl){
     const age=weather?.t?Date.now()-weather.t:(lastFetch?Date.now()-lastFetch:NaN);
-    dataEl.textContent=Number.isFinite(age)?`Vær/hav ${formatAge(age)} · leggfelt ${routeWeatherField.points?.length||0} pkt`:'Vær/hav –';
+    const stable=weather?.stable?' · filtrert':'';
+    dataEl.textContent=Number.isFinite(age)?`Vær/hav ${formatAge(age)} · leggfelt ${routeWeatherField.points?.length||0} pkt${stable}`:'Vær/hav –';
     dataEl.className=Number.isFinite(age)&&age<180000?'ok':'warn';
   }
   if(chartEl){
@@ -1345,6 +1642,19 @@ function updateTacticalPanel(route){
           : 'Tips: velg Norsk sjøkart eller Marin + dybder';
     chartEl.className=(activeMap==='no_chart'||activeMap==='marine_depths')?'ok':'warn';
   }
+  if(choiceEl){
+    choiceEl.textContent=decision ? (decision.chosen==='tactical'?'Taktisk rute':'Direkte/sikker rute') : '–';
+    choiceEl.className=decision?.chosen==='tactical'?'ok':'warn';
+  }
+  if(etaEl){
+    etaEl.textContent=tacticalDecisionText(decision);
+    etaEl.className=decision?.gainSec>0?'ok':'warn';
+  }
+  if(whyEl){
+    whyEl.textContent=tacticalWhyText(decision);
+    whyEl.className=decision?.confidence==='høy'?'ok':'warn';
+  }
+  updateStartModePanel();
 }
 
 function routeNeedsReplan(key, lockedRoute){
@@ -1490,7 +1800,10 @@ function expandLegWithTactics(A,B,rec,options={}){
 }
 
 function makeTacticalRoute(baseRoute, rec){
-  if(!Array.isArray(baseRoute)||baseRoute.length<2)return {route:baseRoute||[],turns:[],mode:'direct'};
+  if(!Array.isArray(baseRoute)||baseRoute.length<2){
+    const decision=makeRouteDecision({directRoute:baseRoute||[],tacticalRoute:baseRoute||[],mode:'direct',turns:[]});
+    return {route:baseRoute||[],turns:[],mode:'direct',decision};
+  }
   const route=[baseRoute[0]], turns=[];
   let mode='direct';
   for(let i=1;i<baseRoute.length;i++){
@@ -1499,7 +1812,26 @@ function makeTacticalRoute(baseRoute, rec){
     for(let j=1;j<part.points.length;j++)route.push(part.points[j]);
     turns.push(...part.turns);
   }
-  return {route,turns:annotateTurnIndexes(route,turns),mode};
+  const annotated=annotateTurnIndexes(route,turns);
+  const directEta=routeEta(baseRoute,{strictDirect:true});
+  const tacticalEta=routeEta(route,{strictDirect:false});
+  const decision=makeRouteDecision({
+    directEta,
+    tacticalEta,
+    mode,
+    turns:annotated,
+    directRoute:baseRoute,
+    tacticalRoute:route
+  });
+
+  // Only show the red SLÅ/GYB geometry when it is actually faster enough,
+  // or when the direct course points into no-go. Otherwise the active red
+  // route remains direct/safe, so the sailor can trust that "slag" means
+  // a measured ETA benefit.
+  if(decision.chosen!=='tactical'){
+    return {route:baseRoute,turns:[],mode:'direct',decision};
+  }
+  return {route,turns:annotated,mode,decision};
 }
 
 
@@ -1519,18 +1851,16 @@ function recommendedRouteTo(target){
       turns:visibleTurns,
       mode:plan.mode||'direct',
       next:visibleRoute?.[1]||null,
-      locked:true
+      locked:true,
+      decision:plan.decision||recommendedNav.decision||fallbackPlan.decision||null
     };
     return visibleRoute;
   }
 
-  // If we already have a valid locked route, keep it.  This is the main fix
-  // for the jumping SLÅ/GYB points seen during live GPS updates.
   if(!routeNeedsReplan(key, tacticalRouteLock.route)){
     return useLockedPlan(tacticalRouteLock);
   }
 
-  // If we have no backend route API, lock the local fallback plan.
   if(!ROUTE_API_URL){
     tacticalRouteLock={
       key,
@@ -1539,12 +1869,12 @@ function recommendedRouteTo(target){
       mode:fallbackPlan.mode||'direct',
       nextIdx:1,
       createdAt:Date.now(),
-      pending:false
+      pending:false,
+      decision:fallbackPlan.decision||null
     };
     return useLockedPlan(tacticalRouteLock);
   }
 
-  // If a server-computed route for the same stable key already exists, lock it.
   if(recommendedNav.key===key && Array.isArray(recommendedNav.route)){
     tacticalRouteLock={
       key,
@@ -1553,56 +1883,52 @@ function recommendedRouteTo(target){
       mode:recommendedNav.mode||'direct',
       nextIdx:Math.max(1,tacticalRouteLock.nextIdx||1),
       createdAt:tacticalRouteLock.createdAt||Date.now(),
-      pending:false
+      pending:false,
+      decision:recommendedNav.decision||null
     };
     return useLockedPlan(tacticalRouteLock);
   }
 
-  // While a new route is being calculated, keep drawing the previous locked
-  // plan if it exists.  This prevents visual jumping while async routing is in
-  // flight.
   if(Array.isArray(tacticalRouteLock.route) && tacticalRouteLock.route.length>1 && tacticalRouteLock.key){
     if(!recommendedNav.pending || recommendedNav.key!==key){
-      recommendedNav={key,route:recommendedNav.route,pending:true,error:null,t:Date.now(),turns:recommendedNav.turns||[],mode:recommendedNav.mode||'direct'};
+      recommendedNav={key,route:recommendedNav.route,pending:true,error:null,t:Date.now(),turns:recommendedNav.turns||[],mode:recommendedNav.mode||'direct',decision:recommendedNav.decision||null};
       fetchServerRoute(from, navTargetForMark(target), {clearance:28, grid:42, margin:1600})
         .then(data=>{
           if(recommendedNav.key!==key)return;
           requestRouteWeatherField(data.route);
           const tactical=makeTacticalRoute(data.route,rec);
-          recommendedNav={key,route:tactical.route,turns:tactical.turns,mode:tactical.mode,pending:false,error:null,t:Date.now()};
-          tacticalRouteLock={key,route:tactical.route,turns:tactical.turns,mode:tactical.mode,nextIdx:1,createdAt:Date.now(),pending:false};
+          recommendedNav={key,route:tactical.route,turns:tactical.turns,mode:tactical.mode,pending:false,error:null,t:Date.now(),decision:tactical.decision||null};
+          tacticalRouteLock={key,route:tactical.route,turns:tactical.turns,mode:tactical.mode,nextIdx:1,createdAt:Date.now(),pending:false,decision:tactical.decision||null};
           renderRecommended();
         })
         .catch(err=>{
           console.warn('Recommended server route failed',err);
           if(recommendedNav.key!==key)return;
-          recommendedNav={key,route:fallbackPlan.route,turns:fallbackPlan.turns,mode:fallbackPlan.mode,pending:false,error:err.message||String(err),t:Date.now()};
-          tacticalRouteLock={key,route:fallbackPlan.route,turns:fallbackPlan.turns,mode:fallbackPlan.mode,nextIdx:1,createdAt:Date.now(),pending:false};
+          recommendedNav={key,route:fallbackPlan.route,turns:fallbackPlan.turns,mode:fallbackPlan.mode,pending:false,error:err.message||String(err),t:Date.now(),decision:fallbackPlan.decision||null};
+          tacticalRouteLock={key,route:fallbackPlan.route,turns:fallbackPlan.turns,mode:fallbackPlan.mode,nextIdx:1,createdAt:Date.now(),pending:false,decision:fallbackPlan.decision||null};
           renderRecommended();
         });
     }
     return useLockedPlan(tacticalRouteLock);
   }
 
-  // No locked route yet: start a server route request and lock a safe local
-  // fallback immediately so the sailor has stable guidance right away.
-  tacticalRouteLock={key,route:fallbackPlan.route,turns:fallbackPlan.turns||[],mode:fallbackPlan.mode||'direct',nextIdx:1,createdAt:Date.now(),pending:true};
+  tacticalRouteLock={key,route:fallbackPlan.route,turns:fallbackPlan.turns||[],mode:fallbackPlan.mode||'direct',nextIdx:1,createdAt:Date.now(),pending:true,decision:fallbackPlan.decision||null};
   if(!recommendedNav.pending || recommendedNav.key!==key){
-    recommendedNav={key,route:null,pending:true,error:null,t:Date.now(),turns:[],mode:'direct'};
+    recommendedNav={key,route:null,pending:true,error:null,t:Date.now(),turns:[],mode:'direct',decision:null};
     fetchServerRoute(from, navTargetForMark(target), {clearance:28, grid:42, margin:1600})
       .then(data=>{
         if(recommendedNav.key!==key)return;
         requestRouteWeatherField(data.route);
-          const tactical=makeTacticalRoute(data.route,rec);
-        recommendedNav={key,route:tactical.route,turns:tactical.turns,mode:tactical.mode,pending:false,error:null,t:Date.now()};
-        tacticalRouteLock={key,route:tactical.route,turns:tactical.turns,mode:tactical.mode,nextIdx:1,createdAt:Date.now(),pending:false};
+        const tactical=makeTacticalRoute(data.route,rec);
+        recommendedNav={key,route:tactical.route,turns:tactical.turns,mode:tactical.mode,pending:false,error:null,t:Date.now(),decision:tactical.decision||null};
+        tacticalRouteLock={key,route:tactical.route,turns:tactical.turns,mode:tactical.mode,nextIdx:1,createdAt:Date.now(),pending:false,decision:tactical.decision||null};
         renderRecommended();
       })
       .catch(err=>{
         console.warn('Recommended server route failed',err);
         if(recommendedNav.key!==key)return;
-        recommendedNav={key,route:fallbackPlan.route,turns:fallbackPlan.turns,mode:fallbackPlan.mode,pending:false,error:err.message||String(err),t:Date.now()};
-        tacticalRouteLock={key,route:fallbackPlan.route,turns:fallbackPlan.turns,mode:fallbackPlan.mode,nextIdx:1,createdAt:Date.now(),pending:false};
+        recommendedNav={key,route:fallbackPlan.route,turns:fallbackPlan.turns,mode:fallbackPlan.mode,pending:false,error:err.message||String(err),t:Date.now(),decision:fallbackPlan.decision||null};
+        tacticalRouteLock={key,route:fallbackPlan.route,turns:fallbackPlan.turns,mode:fallbackPlan.mode,nextIdx:1,createdAt:Date.now(),pending:false,decision:fallbackPlan.decision||null};
         renderRecommended();
       });
   }
@@ -1738,8 +2064,8 @@ function autoAdvanceActiveLegIfPassed(){
   // kunne neste taktiske røde legg bli liggende som oransje planlinje.
   active++;
   resetBoatNav();
-  tacticalRouteLock = { key: '', route: null, turns: [], mode: 'direct', nextIdx: 1, createdAt: 0, pending: false };
-  recommendedNav = { key: '', route: null, pending: false, error: null, t: 0 };
+  tacticalRouteLock = { key: '', route: null, turns: [], mode: 'direct', nextIdx: 1, createdAt: 0, pending: false, decision: null };
+  recommendedNav = { key: '', route: null, pending: false, error: null, t: 0, decision: null };
   save();
   return true;
 }
@@ -1747,14 +2073,15 @@ function autoAdvanceActiveLegIfPassed(){
 function update(){
   if(!pos||!weather)return;
   autoAdvanceActiveLegIfPassed();
+  appendTrackSample();
+  updateStartModePanel();
   if(active>=marks.length){$('leg').innerHTML=`Ferdig`;setStatus('Ferdig');return;}
   const t=marks[active];
   const brg=bearing(pos.lat,pos.lon,t.lat,t.lon);
   const dst=distance(pos.lat,pos.lon,t.lat,t.lon);
   const rec=recommendedCourseTo(t);
   $('leg').innerHTML=`<b>${active+1}</b> ${t.name}<br><span style="font-size:.78rem">${Math.round(dst)} m</span>`;
-  $('course').textContent=Math.round(rec.course)+'°';
-  
+
   const w=weather.wind||{},c=weather.marine||{};
   $('wind').innerHTML=`<span style="color:#dc2626">V</span> ${(w.wind_speed_10m??4.7).toFixed(1)} m/s fra ${(w.wind_direction_10m??177).toFixed(0)}°`;
   $('sea').innerHTML=`<span style="color:#16a34a">B</span> ${(c.wave_height??0.4).toFixed(1)} m ${(c.wave_direction??0).toFixed(0)}° / <span style="color:#2563eb">S</span> ${(c.ocean_current_velocity??0).toFixed(2)} m/s ${(c.ocean_current_direction??0).toFixed(0)}°`;
@@ -1762,46 +2089,41 @@ function update(){
   if($('liveCourse')) $('liveCourse').textContent = Number.isFinite(pos.cog) ? `${Math.round(pos.cog)}°` : '–';
 
   const tacticalRoute=recommendedRouteTo(t);
-  updateTacticalPanel(tacticalRoute);
   const nextTactical=tacticalRoute?.[1];
   const nextBrg=nextTactical ? bearing(pos.lat,pos.lon,nextTactical[0],nextTactical[1]) : rec.course;
   const nextDst=nextTactical ? distance(pos.lat,pos.lon,nextTactical[0],nextTactical[1]) : 0;
-  const nextTurn=(lastTacticalPlan.turns||[]).find(turn => distance(pos.lat,pos.lon,turn.lat,turn.lon)>30);
+  $('course').textContent=Math.round(nextBrg)+'°';
+  updateTacticalPanel(tacticalRoute);
+
+  const decision=lastTacticalPlan.decision||tacticalRouteLock.decision||null;
   const tacticText=lastTacticalPlan.mode==='kryss'
     ? `Kryss aktiv: seil ${Math.round(nextBrg)}° ca. ${Math.round(nextDst)} m til neste SLÅ-punkt.`
     : lastTacticalPlan.mode==='lens'
       ? `Gybe/lens aktiv: seil ${Math.round(nextBrg)}° ca. ${Math.round(nextDst)} m til neste GYB-punkt.`
-      : `Direkte anbefalt kurs ${Math.round(rec.course)}°.`;
+      : `Direkte anbefalt kurs ${Math.round(nextBrg)}°.`;
 
   const polarNote=rec.boatSpeed!=null && rec.twa!=null
     ? `Polar ${rec.polar.label}: ${rec.boatSpeed.toFixed(1)} kn ved TWA ${Math.round(rec.twa)}° / TWS ${Math.round(rec.twsKt)} kn.`
     : `Polar ${rec.polar.label} aktiv.`;
-  $('advice').textContent=`Følg rød taktisk rute mot ${t.name}. ${tacticText}`;
-  $('details').textContent=`Peiling ${Math.round(brg)}°, avstand ${Math.round(dst)} m. Live fart ${Number.isFinite(pos.sog)?kt(pos.sog).toFixed(1):'–'} kn / kurs ${Number.isFinite(pos.cog)?Math.round(pos.cog):'–'}°. ${polarNote} Vind/strøm/bølger hentes via backend; rød rute beregnes med slag/gyb når polar og vind tilsier at direkte kurs ikke er raskest.`;
+  const choiceText=decision?.chosen==='tactical'?'taktisk rute':'direkte/sikker rute';
+  $('advice').textContent=`Følg rød rute mot ${t.name}. ${tacticText}`;
+  $('details').textContent=`Valg: ${choiceText}. ${tacticalDecisionText(decision)}. ${tacticalWhyText(decision)} Peiling ${Math.round(brg)}°, avstand ${Math.round(dst)} m. Live fart ${Number.isFinite(pos.sog)?kt(pos.sog).toFixed(1):'–'} kn / kurs ${Number.isFinite(pos.cog)?Math.round(pos.cog):'–'}°. ${polarNote}`;
 
-  // Beregn tidsforskjell mellom anbefalt kurs og gjeldende kurs mot neste rundingspunkt.
-  // Dette gir seileren en estimert besparelse (eller ekstra tid) ved å følge den røde anbefalte kursen.
   let timeDiffText='–';
-  if(dst > 5 && rec && typeof rec.progress === 'number'){
-    // Anbefalt fremdrift langs peilingen (meter/sekund). rec.progress er i knop,
-    // derfor konverteres til m/s.
+  if(decision?.directEta && decision?.tacticalEta){
+    const gain=decision.gainSec||0;
+    timeDiffText=`Direkte ${decision.directLabel}, taktisk ${decision.tacticalLabel}, ${gain>=0?'gevinst':'tap'} ${formatDuration(Math.abs(gain))}.`;
+  } else if(dst > 5 && rec && typeof rec.progress === 'number'){
     const recSpeedMs = ms(rec.progress);
     const recTime = recSpeedMs>0 ? dst / recSpeedMs : null;
-    // Båtens faktiske fart i m/s (bruker pos.sog når tilgjengelig, ellers simulatorverdien).
     const boatSpeedMs = (pos && typeof pos.sog === 'number') ? pos.sog : ms((+$('simSpeed').value)||5.5);
-    // Kursforskjell mellom båtens heading og peiling til bøya.
     const angleDiff = (pos && typeof pos.cog === 'number') ? Math.abs(diff(pos.cog, brg)) : 0;
-    // Fremdrift langs peilingen for nåværende kurs.
     const boatProgressMs = boatSpeedMs * Math.cos(rad(angleDiff));
     const boatTime = boatProgressMs>0.01 ? dst / boatProgressMs : null;
     if(recTime != null && boatTime != null && isFinite(recTime) && isFinite(boatTime)){
       const delta = boatTime - recTime;
       const sign = delta >= 0 ? '+' : '-';
-      const deltaFmt = formatDuration(Math.abs(delta));
-      const recFmt = formatDuration(recTime);
-      const boatFmt = formatDuration(boatTime);
-      // Sammensatt tekst: anbefalt tid, nåværende tid og differanse.
-      timeDiffText = `Anbefalt ${recFmt}, din kurs ${boatFmt}, forskjell ${sign}${deltaFmt}`;
+      timeDiffText = `Anbefalt ${formatDuration(recTime)}, din kurs ${formatDuration(boatTime)}, forskjell ${sign}${formatDuration(Math.abs(delta))}`;
     }
   }
   const tdEl = $('timediff');
@@ -1853,15 +2175,15 @@ async function fetchData(lat,lon){
       if(!r.ok) throw new Error(`Weather API HTTP ${r.status}`);
       const data=await r.json();
       if(!data.ok) throw new Error(data.error||'Weather API-feil');
-      weather={wind:data.wind, marine:data.marine, source:data.source||'server', t:data.t||Date.now()};
+      weather=stabilizeWeatherPayload({wind:data.wind, marine:data.marine, source:data.source||'server', t:data.t||Date.now()});
       setStatus('Live vær');
     } else {
-      weather=await fallback(); weather.t=Date.now();
+      weather=stabilizeWeatherPayload(await fallback()); weather.t=Date.now();
       setStatus('Live');
     }
   }catch(err){
     console.warn('Weather API failed, using fallback/demo',err);
-    try{ weather=await fallback(); weather.t=Date.now(); setStatus('Live direkte'); }
+    try{ weather=stabilizeWeatherPayload(await fallback()); weather.t=Date.now(); setStatus('Live direkte'); }
     catch{ simWeatherFallback();setStatus('Demo'); }
   }
   recommendedNav.key=''; // vær/strøm kan endre anbefalt rute
@@ -2355,9 +2677,11 @@ async function exportNavionicsGpx(){
 
 $('clear').onclick=()=>{if(confirm('Tøm?')){marks=[];active=0;line={pin:null,boat:null};resetBoatNav();save();render();update();}};
 $('useHere').onclick=()=>{if(!pos)return alert('Start GPS eller demo først');marks.push({name:`Merke ${marks.length+1}`,lat:pos.lat,lon:pos.lon,type:'merke'});resetBoatNav();save();render();update();};
-$('setPin').onclick=()=>{if(!pos)return alert('Start GPS eller demo først');line.pin={lat:pos.lat,lon:pos.lon};save();render();};
-$('setBoat').onclick=()=>{if(!pos)return alert('Start GPS eller demo først');line.boat={lat:pos.lat,lon:pos.lon};save();render();};
+$('setPin').onclick=()=>{if(!pos)return alert('Start GPS eller demo først');line.pin={lat:pos.lat,lon:pos.lon};save();render();updateStartModePanel();};
+$('setBoat').onclick=()=>{if(!pos)return alert('Start GPS eller demo først');line.boat={lat:pos.lat,lon:pos.lon};save();render();updateStartModePanel();};
 if($('exportNavionics')) $('exportNavionics').onclick=()=>exportNavionicsGpx();
+if($('openRaceReport')) $('openRaceReport').onclick=()=>openRaceReport();
+if($('startTime')) $('startTime').onchange=()=>updateStartModePanel();
 if($('searchPlace')) $('searchPlace').onclick=()=>searchPlaceOrCoordinate();
 if($('placeSearch')){
   $('placeSearch').oninput=()=>schedulePlaceSuggestions();
@@ -2443,8 +2767,8 @@ if(importInput && typeof importInput.addEventListener === 'function'){
 const refreshTacticsBtn = typeof document !== 'undefined' ? document.getElementById('refreshTactics') : null;
 if(refreshTacticsBtn && typeof refreshTacticsBtn.addEventListener === 'function'){
   refreshTacticsBtn.addEventListener('click', ()=>{
-    tacticalRouteLock = { key: '', route: null, turns: [], mode: 'direct', nextIdx: 1, createdAt: 0, pending: false };
-    recommendedNav = { key: '', route: null, pending: false, error: null, t: 0 };
+    tacticalRouteLock = { key: '', route: null, turns: [], mode: 'direct', nextIdx: 1, createdAt: 0, pending: false, decision: null };
+    recommendedNav = { key: '', route: null, pending: false, error: null, t: 0, decision: null };
     renderRecommended();
     updateTacticalPanel(tacticalRouteLock.route);
     if(pos&&weather)update();

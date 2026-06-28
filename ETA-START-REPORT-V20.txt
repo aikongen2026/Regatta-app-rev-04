@@ -1,0 +1,10 @@
+Never 2 late Regatta v20
+
+Endringer:
+- ETA-sammenligning direkte/sikker rute vs taktisk SLÅ/GYB-rute.
+- Rød taktisk rute velges bare når beregnet raskere nok eller direkte kurs er dårlig/umulig.
+- Panelet Taktisk navigasjon viser rutevalg, ETA og hvorfor ruten er valgt.
+- Vær/havdata filtreres/glattes for mer stabile anbefalinger.
+- Startmodus med starttid, linjefordel, tid til linje og time-to-burn.
+- Seilasrapport åpnes som eget dokument via egen link/knapp.
+- Polar fra ORC v19 er beholdt.
