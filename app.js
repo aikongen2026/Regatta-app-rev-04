@@ -14,6 +14,10 @@ let weatherStable = { wind: null, marine: null, t: 0 };
 let trackLog = [];
 let lastTrackLog = 0;
 let raceReportUrl = null;
+// Manual start chosen by the user. This is deliberately separated from GPS
+// position and from the course's Start mark, so demo/live controls cannot
+// accidentally jump the boat back to the old course start.
+let manualBoatStart = null;
 let showFullTacticalCourse = localStorage.regattaShowFullTacticalCourse === '1';
 // Lock the tactical route so tack/gybe points do not jump every time the
 // boat position updates.  The lock is reset only when the active mark,
@@ -21,7 +25,7 @@ let showFullTacticalCourse = localStorage.regattaShowFullTacticalCourse === '1';
 let tacticalRouteLock = { key: '', route: null, turns: [], mode: 'direct', nextIdx: 1, createdAt: 0, pending: false, decision: null };
 let boatNav = { active: null, route: [], idx: 1, pending: false, source: 'client' };
 let recommendedNav = { key: '', route: null, pending: false, error: null, t: 0, decision: null };
-const APP_VERSION = '2026-06-24-v22-route-sanity-eta-fix';
+const APP_VERSION = '2026-06-24-v23-manual-start-lock';
 const SAME_ORIGIN_ROUTE_API = ['localhost','127.0.0.1'].includes(location.hostname) || !/github\.io$/i.test(location.hostname)
   ? location.origin
   : '';
@@ -183,6 +187,37 @@ function replaceCourseStartMark(lat,lon,name='Start'){
   const rest=marks.filter(m=>m.type!=='start');
   marks=[{name:name||'Start',lat,lon,type:'start'},...rest];
   active=marks.length>1?1:0;
+}
+
+function setManualBoatStartFromPos(p){
+  if(!p || !Number.isFinite(p.lat) || !Number.isFinite(p.lon))return;
+  manualBoatStart={
+    lat:p.lat,
+    lon:p.lon,
+    cog:Number.isFinite(p.cog)?p.cog:(+$('simHeading')?.value||210),
+    sog:Number.isFinite(p.sog)?p.sog:ms(+$('simSpeed')?.value||5.5),
+    t:Date.now()
+  };
+}
+
+function demoStartPosition(){
+  // Priority order when demo starts:
+  // 1) the user-selected manual boat start, if present
+  // 2) current boat position, if no course exists
+  // 3) the course Start mark
+  // This prevents the demo loop from jumping the boat back to an old Start mark
+  // after the user has explicitly chosen "Endre båtens startpunkt".
+  if(manualBoatStart && Number.isFinite(manualBoatStart.lat) && Number.isFinite(manualBoatStart.lon)){
+    return {...manualBoatStart};
+  }
+  if(!marks.length && pos && Number.isFinite(pos.lat) && Number.isFinite(pos.lon)){
+    return {...pos};
+  }
+  if(marks.length){
+    return {lat:marks[0].lat,lon:marks[0].lon,sog:ms(+$('simSpeed')?.value||5.5),cog:+$('simHeading')?.value||210};
+  }
+  const w=nearestWater(59.2025,10.767);
+  return {lat:w.lat,lon:w.lon,sog:ms(+$('simSpeed')?.value||5.5),cog:+$('simHeading')?.value||210};
 }
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
@@ -825,6 +860,7 @@ function importCoordinateCourse(){
   stopLiveAndDemoForManualStart();
   const w=nearestWater(coords[0][0],coords[0][1]);
   pos={lat:w.lat,lon:w.lon,sog:ms(+$('simSpeed').value||5.5),cog:+$('simHeading').value||210};
+  setManualBoatStartFromPos(pos);
   active=marks.length>1?1:0;
   save();render();update();
   map.setView([pos.lat,pos.lon],14);
@@ -1125,8 +1161,17 @@ function waterStep(from,course,meters){
   return !isLand(p.lat,p.lon)?{...p,cog:c0}:{...start,cog:c0};
 }
 
-function save(){localStorage.regattaV2=JSON.stringify({marks,active,line,pos});}
-function load(){try{const s=JSON.parse(localStorage.regattaV2||'{}');marks=s.marks||[];active=s.active||0;line=s.line||line;pos=s.pos||null;}catch{}}
+function save(){localStorage.regattaV2=JSON.stringify({marks,active,line,pos,manualBoatStart});}
+function load(){
+  try{
+    const s=JSON.parse(localStorage.regattaV2||'{}');
+    marks=s.marks||[];
+    active=s.active||0;
+    line=s.line||line;
+    pos=s.pos||null;
+    manualBoatStart=s.manualBoatStart||null;
+  }catch{}
+}
 
 const VECTOR_POSITIONS=[[18,26],[36,22],[56,25],[74,30],[25,47],[47,46],[68,52],[17,70],[39,73],[61,76],[80,68]];
 function vectorValues(sample){
@@ -2287,6 +2332,7 @@ function setBoatStart(lat,lon,keep=false){
   // beholdes valgt posisjon uendret.
   const w=nearestWater(lat,lon);
   pos={lat:w.lat,lon:w.lon,sog:ms(+$('simSpeed').value||5.5),cog:+$('simHeading').value||210};
+  setManualBoatStartFromPos(pos);
   resetBoatNav();
   pendingBoatStart=false;
   const setBtn=$('setBoatStart');
@@ -2303,6 +2349,7 @@ function setBoatStart(lat,lon,keep=false){
   render();
   fetchData(pos.lat,pos.lon).finally(()=>{update()});
   map.setView([pos.lat,pos.lon],Math.max(map.getZoom(),14));
+  setStatus('Manuelt startpunkt låst for demo');
 }
 
 function advanceBoatOnCourse(dtSec){
@@ -2376,6 +2423,7 @@ function applyMapPointChoice(latlng,choice,name=''){
     stopLiveAndDemoForManualStart();
     const w=nearestWater(latlng.lat,latlng.lng);
     pos={lat:w.lat,lon:w.lon,sog:ms(+$('simSpeed').value||5.5),cog:+$('simHeading').value||210};
+    setManualBoatStartFromPos(pos);
     resetBoatNav();
     fetchData(pos.lat,pos.lon).catch(()=>{});
   } else {
@@ -2514,16 +2562,26 @@ $('sim').onclick=async()=>{
   stopGpsTracking();
   simOn=!simOn;$('sim').textContent=simOn?'Stopp demo':'Start demo-sim';
   if(!simOn){clearInterval(simTimer);return;}
-  if(marks.length){
-    // Demo skal alltid starte fra løypas Start-punkt når løype finnes.
-    pos={lat:marks[0].lat,lon:marks[0].lon,sog:ms(+$('simSpeed').value||5.5),cog:+$('simHeading').value||210};
-    active=marks.length>1?1:0;
-    resetBoatNav();
+
+  const start=demoStartPosition();
+  const w=isLand(start.lat,start.lon) ? nearestWater(start.lat,start.lon) : start;
+  pos={
+    lat:w.lat,
+    lon:w.lon,
+    sog:ms(+$('simSpeed').value||5.5),
+    cog:Number.isFinite(start.cog)?start.cog:(+$('simHeading').value||210)
+  };
+
+  // If the user has manually selected a boat start, preserve the current active
+  // leg if it is valid. Otherwise a new demo starts at leg 1.
+  if(marks.length>1){
+    if(!manualBoatStart || active<1 || active>=marks.length) active=1;
   } else {
-    pos=pos||nearestWater(59.2025,10.767);
-    pos.sog=ms(+$('simSpeed').value||5.5);pos.cog=+$('simHeading').value||210;
-    resetBoatNav();
+    active=0;
   }
+
+  resetBoatNav();
+  setStatus(manualBoatStart ? 'Demo startet fra manuelt startpunkt' : 'Demo startet fra løypas Start');
   fetchData(pos.lat,pos.lon).finally(()=>update());
   save();
   startSimLoop();
@@ -2612,6 +2670,7 @@ $('sample').onclick=()=>{
   marks=[{name:'Start',lat:59.2015,lon:10.7663,type:'start'},{name:'Bøye 2',lat:59.2165,lon:10.7705,type:'runding'},{name:'Bunn',lat:59.193,lon:10.792,type:'runding'},{name:'Mål',lat:59.2017,lon:10.767,type:'mål'}];
   active=0;
   pos={lat:marks[0].lat,lon:marks[0].lon,sog:ms(+$('simSpeed').value||5.5),cog:+$('simHeading').value||210};
+  setManualBoatStartFromPos(pos);
   active=marks.length>1?1:0;
   resetBoatNav();
   save();update();
@@ -2758,7 +2817,7 @@ async function exportNavionicsGpx(){
   alert('GPX-fil lastes ned. På mobil kan du åpne filen og velge Navionics Boating for import.');
 }
 
-$('clear').onclick=()=>{if(confirm('Tøm?')){marks=[];active=0;line={pin:null,boat:null};resetBoatNav();save();render();update();}};
+$('clear').onclick=()=>{if(confirm('Tøm?')){marks=[];active=0;line={pin:null,boat:null};manualBoatStart=null;resetBoatNav();save();render();update();}};
 $('useHere').onclick=()=>{if(!pos)return alert('Start GPS eller demo først');marks.push({name:`Merke ${marks.length+1}`,lat:pos.lat,lon:pos.lon,type:'merke'});resetBoatNav();save();render();update();};
 $('setPin').onclick=()=>{if(!pos)return alert('Start GPS eller demo først');line.pin={lat:pos.lat,lon:pos.lon};save();render();updateStartModePanel();};
 $('setBoat').onclick=()=>{if(!pos)return alert('Start GPS eller demo først');line.boat={lat:pos.lat,lon:pos.lon};save();render();updateStartModePanel();};

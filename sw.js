@@ -1,10 +1,10 @@
-const CACHE = 'regatta-pwa-2026-06-24-v22-route-sanity-eta-fix';
+const CACHE = 'regatta-pwa-2026-06-24-v23-manual-start-lock';
 const ASSETS = [
   './',
   './index.html',
-  './app.js?v=2026-06-24-v22-route-sanity-eta-fix',
-  './style.css?v=2026-06-24-v22-route-sanity-eta-fix',
-  './manifest.webmanifest?v=2026-06-24-v22-route-sanity-eta-fix',
+  './app.js?v=2026-06-24-v23-manual-start-lock',
+  './style.css?v=2026-06-24-v23-manual-start-lock',
+  './manifest.webmanifest?v=2026-06-24-v23-manual-start-lock',
   './icon-192.png',
   './icon-512.png'
 ];

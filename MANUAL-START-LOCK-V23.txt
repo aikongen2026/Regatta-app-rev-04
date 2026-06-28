@@ -1,0 +1,9 @@
+Never 2 late Regatta v23
+
+Fiks for manuelt valgt startpunkt:
+- Manuelt valgt båtstart lagres separat fra banens Start-merke.
+- Demo starter fra manuelt valgt startpunkt hvis brukeren har valgt dette.
+- Demo hopper ikke lenger automatisk tilbake til gammelt Start-merke i banen.
+- Hvis ingen manuell start er valgt, starter demo som før fra banens Start.
+- GPS/live overstyrer fortsatt med faktisk GPS-posisjon når Start live brukes.
+- Tøm bane nullstiller også manuelt startpunkt.
