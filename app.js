@@ -25,7 +25,7 @@ let showFullTacticalCourse = localStorage.regattaShowFullTacticalCourse === '1';
 let tacticalRouteLock = { key: '', route: null, turns: [], mode: 'direct', nextIdx: 1, createdAt: 0, pending: false, decision: null };
 let boatNav = { active: null, route: [], idx: 1, pending: false, source: 'client' };
 let recommendedNav = { key: '', route: null, pending: false, error: null, t: 0, decision: null };
-const APP_VERSION = '2026-06-24-v24-trustworthy-laylines';
+const APP_VERSION = '2026-06-24-v25-conservative-plan-startfix';
 const SAME_ORIGIN_ROUTE_API = ['localhost','127.0.0.1'].includes(location.hostname) || !/github\.io$/i.test(location.hostname)
   ? location.origin
   : '';
@@ -199,6 +199,15 @@ function setManualBoatStartFromPos(p){
     t:Date.now()
   };
 }
+
+function isNearManualBoatStart(radius=80){
+  return !!(manualBoatStart && pos &&
+    Number.isFinite(manualBoatStart.lat) && Number.isFinite(manualBoatStart.lon) &&
+    Number.isFinite(pos.lat) && Number.isFinite(pos.lon) &&
+    distance(pos.lat,pos.lon,manualBoatStart.lat,manualBoatStart.lon) <= radius);
+}
+
+
 
 function demoStartPosition(){
   // Priority order when demo starts:
@@ -425,10 +434,10 @@ function makeRouteDecision({directEta,tacticalEta,mode,turns,directRoute,tactica
   // This is intentionally conservative: if the model is uncertain, we keep the
   // simple direct route so the sailor can trust that red tack points mean real
   // benefit.
-  const minGainPct=0.055;        // show tactical only when it clearly wins
-  const nearNoGoTolerance=4;     // deg above beat angle where layline is acceptable
-  const nearGybeTolerance=5;     // deg beyond gybe optimum where gybing is acceptable
-  const maxNearNoGoPenalty=0.005; // allow nearly equal only at the boundary
+  const minGainPct=0.08;         // v25: show tactical only when it clearly wins
+  const nearNoGoTolerance=1.5;   // only true no-go/edge cases may override ETA
+  const nearGybeTolerance=8;
+  const maxNearNoGoPenalty=0.0;  // no "nearly equal" tactical route; it must win
   const polar=currentPolar();
   const tws=directEta?.avgTwsKt ?? kt(weather?.wind?.wind_speed_10m ?? 5);
   const beat=clamp(rowAtTws(polar.beatAngles,tws,polar),32,55);
@@ -1616,6 +1625,15 @@ function safeAdvanceTowardWaypoint(waypoint,step){
   const d=distance(pos.lat,pos.lon,waypoint.lat,waypoint.lon);
   const move=Math.min(step,d);
   const p=dest(pos.lat,pos.lon,brg,move);
+
+  // Manuelt valgt startpunkt er "sannheten" for demo/visning. Hvis landmasken
+  // er grov akkurat der, tillat de første meterne fra valgt punkt i stedet for
+  // å hoppe til nearestWater().
+  if(isNearManualBoatStart(140)){
+    pos.lat=p.lat;pos.lon=p.lon;pos.cog=brg;
+    return true;
+  }
+
   if(!isLand(p.lat,p.lon)&&!crossesLand([pos.lat,pos.lon],[p.lat,p.lon])){
     pos.lat=p.lat;pos.lon=p.lon;pos.cog=brg;
     return true;
@@ -1658,7 +1676,7 @@ function routeKeyForRecommendation(target, rec){
   // changes or when the user presses "Oppdater taktisk rute".
   const q=(v,step=1)=>Number.isFinite(v)?Math.round(v/step)*step:0;
   return [
-    'stable-v24',
+    'stable-v25',
     active, marks.length,
     target.lat.toFixed(5), target.lon.toFixed(5),
     currentPolarMode(),
@@ -1903,12 +1921,12 @@ function expandLegWithTactics(A,B,rec,options={}){
   // bearing is actually close to no-go/deep-lens or the polar recommendation
   // deviates meaningfully from the bearing.  ETA comparison later decides
   // whether it is really shown.
-  if(twa < beat + 7 || (recDiff>18 && Math.abs(diff(recCourse,windFrom)) <= beat+8)){
+  if(twa < beat + 2 || (recDiff>26 && Math.abs(diff(recCourse,windFrom)) <= beat+3)){
     mode='kryss';
     courseA=norm(windFrom - beat);
     courseB=norm(windFrom + beat);
     label='SLÅ';
-  } else if(twa > gybe + 4 || (recDiff>18 && Math.abs(diff(recCourse,windFrom)) >= gybe+2)){
+  } else if(twa > gybe + 10 || (recDiff>28 && Math.abs(diff(recCourse,windFrom)) >= gybe+8)){
     mode='lens';
     courseA=norm(windFrom + gybe);
     courseB=norm(windFrom - gybe);
@@ -2164,42 +2182,31 @@ function drawFutureTacticalCourse(){
   clearFutureTacticalOverlays();
   if(!showFullTacticalCourse || !marks.length || active>=marks.length-1 || !weather)return;
 
+  // v25: Kommende legg vises kun som rolig planlinje. Vi tegner IKKE
+  // fremtidige SLÅ/GYB-punkter før leggen faktisk blir aktiv.  Fremtidige
+  // taktiske punkter ble for lett misvisende fordi de var basert på prognose,
+  // ikke båtens faktiske posisjon ved runding.
   for(let i=active+1;i<marks.length;i++){
     const fromMark=marks[i-1], toMark=marks[i];
     const base=futureLegBaseRoute(fromMark,toMark);
     if(!Array.isArray(base)||base.length<2)continue;
 
-    const midA=base[0], midB=base[base.length-1];
-    const rec=legRecFromPoints(midA,midB);
-    const plan=makeTacticalRoute(base,rec);
-    const route=Array.isArray(plan.route)&&plan.route.length>1 ? plan.route : base;
-
-    const line=L.polyline(route,{
+    const line=L.polyline(base,{
       color:'#fb923c',
-      weight:3,
-      opacity:.62,
-      dashArray:'4 10',
+      weight:2.5,
+      opacity:.54,
+      dashArray:'4 12',
       interactive:false
     }).addTo(map);
     futureTacticalOverlays.push(line);
 
-    // Smaller labels for upcoming legs. Active leg remains red and larger.
-    const turns=compactFutureTurns(plan.turns||[]);
-    for(const turn of turns){
-      const html=`<div class="futureTackLabel"><b>${turn.label}</b><span>${turn.course}°</span></div>`;
-      const marker=L.marker([turn.lat,turn.lon],{icon:L.divIcon({html,iconSize:[38,24],iconAnchor:[19,12],className:'tackIcon'}),interactive:false}).addTo(map);
-      futureTacticalOverlays.push(marker);
-    }
-
-    if(route.length>=2){
-      const a=route[0], b=route[1];
-      const c=Math.round(bearing(a[0],a[1],b[0],b[1]));
-      const d=distance(a[0],a[1],b[0],b[1]);
-      const mid=dest(a[0],a[1],c,Math.min(d*.44,360));
-      const html=`<div class="futureLegLabel"><b>Legg ${i+1}</b><span>${c}°</span></div>`;
-      const marker=L.marker([mid.lat,mid.lon],{icon:L.divIcon({html,iconSize:[58,26],iconAnchor:[29,13],className:'tackIcon'}),interactive:false}).addTo(map);
-      futureTacticalOverlays.push(marker);
-    }
+    const a=base[0], b=base[base.length-1];
+    const c=Math.round(bearing(a[0],a[1],b[0],b[1]));
+    const d=distance(a[0],a[1],b[0],b[1]);
+    const mid=dest(a[0],a[1],c,Math.min(d*.44,360));
+    const html=`<div class="futureLegLabel"><b>Legg ${i+1}</b><span>${c}° plan</span></div>`;
+    const marker=L.marker([mid.lat,mid.lon],{icon:L.divIcon({html,iconSize:[70,26],iconAnchor:[35,13],className:'tackIcon'}),interactive:false}).addTo(map);
+    futureTacticalOverlays.push(marker);
   }
 }
 
@@ -2394,10 +2401,10 @@ function setBoatStart(lat,lon,keep=false){
   // båten tilbake til gammel posisjon.
   stopLiveAndDemoForManualStart();
 
-  // Snap bare hvis punktet faktisk ligger på land. Hvis punktet er på vann,
-  // beholdes valgt posisjon uendret.
-  const w=nearestWater(lat,lon);
-  pos={lat:w.lat,lon:w.lon,sog:ms(+$('simSpeed').value||5.5),cog:+$('simHeading').value||210};
+  // Manuelt startpunkt skal være nøyaktig det brukeren trykker på.
+  // Vi snapper ikke synlig båt til nearestWater her, fordi landmasken er grov
+  // og kan flytte båten mange meter selv om punktet ligger på sjø i kartet.
+  pos={lat,lon,sog:ms(+$('simSpeed').value||5.5),cog:+$('simHeading').value||210};
   setManualBoatStartFromPos(pos);
   resetBoatNav();
   pendingBoatStart=false;
@@ -2420,7 +2427,7 @@ function setBoatStart(lat,lon,keep=false){
 
 function advanceBoatOnCourse(dtSec){
   if(!pos)return;
-  if(isLand(pos.lat,pos.lon)){const w=nearestWater(pos.lat,pos.lon);pos.lat=w.lat;pos.lon=w.lon;}
+  if(isLand(pos.lat,pos.lon) && !isNearManualBoatStart(140)){const w=nearestWater(pos.lat,pos.lon);pos.lat=w.lat;pos.lon=w.lon;}
   const speedMs=ms(+$('simSpeed').value||5.5);
   pos.sog=speedMs;
 
@@ -2452,7 +2459,7 @@ function advanceBoatOnCourse(dtSec){
       if((boatNav.rounding||boatNav.roundingPlanned) && active < marks.length-1) active++;
       resetBoatNav();
     }
-    if(isLand(pos.lat,pos.lon)){const w=nearestWater(pos.lat,pos.lon);pos.lat=w.lat;pos.lon=w.lon;resetBoatNav();}
+    if(isLand(pos.lat,pos.lon) && !isNearManualBoatStart(140)){const w=nearestWater(pos.lat,pos.lon);pos.lat=w.lat;pos.lon=w.lon;resetBoatNav();}
     save();return;
   }
 
@@ -2487,8 +2494,9 @@ function applyMapPointChoice(latlng,choice,name=''){
     // Båten flyttes samtidig til dette startpunktet.
     replaceCourseStartMark(latlng.lat,latlng.lng,finalName);
     stopLiveAndDemoForManualStart();
-    const w=nearestWater(latlng.lat,latlng.lng);
-    pos={lat:w.lat,lon:w.lon,sog:ms(+$('simSpeed').value||5.5),cog:+$('simHeading').value||210};
+    // Bruk eksakt valgt startpunkt for synlig båt. Ruting kan justere internt,
+    // men brukerens markør skal ikke hoppe til nearestWater().
+    pos={lat:latlng.lat,lon:latlng.lng,sog:ms(+$('simSpeed').value||5.5),cog:+$('simHeading').value||210};
     setManualBoatStartFromPos(pos);
     resetBoatNav();
     fetchData(pos.lat,pos.lon).catch(()=>{});
@@ -2630,7 +2638,10 @@ $('sim').onclick=async()=>{
   if(!simOn){clearInterval(simTimer);return;}
 
   const start=demoStartPosition();
-  const w=isLand(start.lat,start.lon) ? nearestWater(start.lat,start.lon) : start;
+  // Hvis brukeren har satt manuelt startpunkt, skal demo starte nøyaktig der.
+  // Ikke snap synlig båt med nearestWater; det var årsaken til at båten ikke
+  // ble stående der den ble satt når landmasken tolket sjøområdet feil.
+  const w=manualBoatStart ? start : (isLand(start.lat,start.lon) ? nearestWater(start.lat,start.lon) : start);
   pos={
     lat:w.lat,
     lon:w.lon,
@@ -2944,8 +2955,8 @@ if(importInput && typeof importInput.addEventListener === 'function'){
       // Set boat start at the first coordinate. Use nearest water to avoid
       // immediate relocation when the simulation runs.
       const [sLat, sLon] = coords[0];
-      const w = nearestWater(sLat, sLon);
-      pos = { lat: w.lat, lon: w.lon, sog: ms(+$('simSpeed').value||5.5), cog: +$('simHeading').value||210 };
+      pos = { lat: sLat, lon: sLon, sog: ms(+$('simSpeed').value||5.5), cog: +$('simHeading').value||210 };
+      setManualBoatStartFromPos(pos);
       // Add imported points to marks array. Assign types and names.
       coords.forEach((ll, idx) => {
         const [lat, lon] = ll;

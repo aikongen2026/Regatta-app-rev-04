@@ -1,0 +1,10 @@
+V25 - konservativ planvisning og endelig startpunkt-fix
+
+- Manuelt valgt båt-startpunkt brukes nå eksakt som valgt på kartet.
+- Synlig båt snappes ikke lenger til nearestWater() ved manuell start, fordi landmasken kan være grov.
+- Demo starter nøyaktig fra manuelt valgt startpunkt.
+- De første meterne etter manuell demo-start tillates fra valgt punkt, slik at båten ikke hopper bort.
+- Kommende legg i "Vis hele taktisk bane" vises nå som rolig oransje planlinje.
+- Fremtidige SLÅ/GYB-punkter tegnes ikke før leggen blir aktiv.
+- Aktiv legg er fortsatt rød anbefalt rute.
+- Taktisk SLÅ/GYB for aktiv legg er gjort mer konservativ: vises bare ved tydelig ETA-gevinst eller faktisk no-go.
