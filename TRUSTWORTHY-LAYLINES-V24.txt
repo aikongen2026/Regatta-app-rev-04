@@ -1,0 +1,6 @@
+V24 - trustworthy laylines
+
+- Recommended red route is now calculated for the full active leg, not for every small safe-route segment.
+- Fallback route now always goes to the active mark, not only a short projection in current heading.
+- Direct/safe route is used unless SLÅ/GYB is really justified by no-go/ETA.
+- Prevents strange GYB/SLÅ points beside/outside the leg from looking like live commands.
