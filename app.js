@@ -25,7 +25,7 @@ let showFullTacticalCourse = localStorage.regattaShowFullTacticalCourse === '1';
 let tacticalRouteLock = { key: '', route: null, turns: [], mode: 'direct', nextIdx: 1, createdAt: 0, pending: false, decision: null };
 let boatNav = { active: null, route: [], idx: 1, pending: false, source: 'client' };
 let recommendedNav = { key: '', route: null, pending: false, error: null, t: 0, decision: null };
-const APP_VERSION = '2026-06-24-v25-conservative-plan-startfix';
+const APP_VERSION = '2026-06-24-v26-tactical-preview-status';
 const SAME_ORIGIN_ROUTE_API = ['localhost','127.0.0.1'].includes(location.hostname) || !/github\.io$/i.test(location.hostname)
   ? location.origin
   : '';
@@ -1948,7 +1948,7 @@ function expandLegWithTactics(A,B,rec,options={}){
 
   // Choose the first board from current COG if possible, otherwise from recommended course.
   let first=courseA, second=courseB, firstMeters=solved.a, secondMeters=solved.b;
-  const bias=Number.isFinite(pos?.cog) ? pos.cog : recCourse;
+  const bias=Number.isFinite(options.biasCourse) ? options.biasCourse : (Number.isFinite(pos?.cog) ? pos.cog : recCourse);
   if(Math.abs(diff(courseB,bias)) < Math.abs(diff(courseA,bias))){
     first=courseB; second=courseA; firstMeters=solved.b; secondMeters=solved.a;
   }
@@ -2182,34 +2182,70 @@ function drawFutureTacticalCourse(){
   clearFutureTacticalOverlays();
   if(!showFullTacticalCourse || !marks.length || active>=marks.length-1 || !weather)return;
 
-  // v25: Kommende legg vises kun som rolig planlinje. Vi tegner IKKE
-  // fremtidige SLÅ/GYB-punkter før leggen faktisk blir aktiv.  Fremtidige
-  // taktiske punkter ble for lett misvisende fordi de var basert på prognose,
-  // ikke båtens faktiske posisjon ved runding.
+  // v26: Full bane-modus viser igjen taktiske forslag for kommende legg, men
+  // kun som en svak plan-preview.  Aktiv legg er fortsatt eneste røde
+  // navigasjonsrute.  Fremtidige SLÅ/GYB-punkter vises bare når ETA/no-go-
+  // beslutningen faktisk velger taktisk rute, og begrenses til få, små labels.
   for(let i=active+1;i<marks.length;i++){
     const fromMark=marks[i-1], toMark=marks[i];
     const base=futureLegBaseRoute(fromMark,toMark);
     if(!Array.isArray(base)||base.length<2)continue;
 
-    const line=L.polyline(base,{
+    const a=base[0], b=base[base.length-1];
+    const legCourse=bearing(a[0],a[1],b[0],b[1]);
+    let plan={route:base,turns:[],mode:'direct',decision:null};
+    try{
+      const rec=legRecFromPoints(a,b);
+      // Use leg bearing as bias for future preview.  The current boat COG should
+      // not decide which side a future leg starts on.
+      const expanded=expandLegWithTactics(a,b,rec,{future:true,biasCourse:legCourse});
+      if(expanded.mode!=='direct' && expanded.points?.length>2){
+        const annotated=annotateTurnIndexes(expanded.points,expanded.turns||[]);
+        const decision=makeRouteDecision({
+          directEta:routeEta(base,{strictDirect:true}),
+          tacticalEta:routeEta(expanded.points,{strictDirect:false}),
+          mode:expanded.mode,
+          turns:annotated,
+          directRoute:base,
+          tacticalRoute:expanded.points
+        });
+        if(decision.chosen==='tactical'){
+          plan={route:expanded.points,turns:annotated,mode:expanded.mode,decision};
+        }
+      }
+    }catch(err){
+      console.warn('Future tactical preview skipped',err);
+    }
+
+    const useTactical=plan.mode!=='direct' && Array.isArray(plan.turns) && plan.turns.length;
+    const drawPts=useTactical ? plan.route : base;
+    const line=L.polyline(drawPts,{
       color:'#fb923c',
-      weight:2.5,
-      opacity:.54,
-      dashArray:'4 12',
+      weight:useTactical?2.8:2.3,
+      opacity:useTactical ? .66 : .48,
+      dashArray:useTactical?'5 10':'4 12',
       interactive:false
     }).addTo(map);
     futureTacticalOverlays.push(line);
 
-    const a=base[0], b=base[base.length-1];
-    const c=Math.round(bearing(a[0],a[1],b[0],b[1]));
+    const c=Math.round(legCourse);
     const d=distance(a[0],a[1],b[0],b[1]);
     const mid=dest(a[0],a[1],c,Math.min(d*.44,360));
-    const html=`<div class="futureLegLabel"><b>Legg ${i+1}</b><span>${c}° plan</span></div>`;
-    const marker=L.marker([mid.lat,mid.lon],{icon:L.divIcon({html,iconSize:[70,26],iconAnchor:[35,13],className:'tackIcon'}),interactive:false}).addTo(map);
+    const html=useTactical
+      ? `<div class="futureLegLabel"><b>Legg ${i+1}</b><span>${plan.mode==='lens'?'GYB':'SLÅ'} plan</span></div>`
+      : `<div class="futureLegLabel"><b>Legg ${i+1}</b><span>${c}° direkte</span></div>`;
+    const marker=L.marker([mid.lat,mid.lon],{icon:L.divIcon({html,iconSize:[76,26],iconAnchor:[38,13],className:'tackIcon'}),interactive:false}).addTo(map);
     futureTacticalOverlays.push(marker);
+
+    if(useTactical){
+      for(const turn of compactFutureTurns(plan.turns)){
+        const thtml=`<div class="futureTackLabel"><b>${turn.label}</b><span>${turn.course}°</span></div>`;
+        const tmarker=L.marker([turn.lat,turn.lon],{icon:L.divIcon({html:thtml,iconSize:[42,24],iconAnchor:[21,12],className:'tackIcon'}),interactive:false}).addTo(map);
+        futureTacticalOverlays.push(tmarker);
+      }
+    }
   }
 }
-
 
 function renderRecommended(){
   if(redRouteLine){redRouteLine.remove();redRouteLine=null;}
@@ -2301,14 +2337,20 @@ function update(){
     ? `Kryss aktiv: seil ${Math.round(nextBrg)}° ca. ${Math.round(nextDst)} m til neste SLÅ-punkt.`
     : lastTacticalPlan.mode==='lens'
       ? `Gybe/lens aktiv: seil ${Math.round(nextBrg)}° ca. ${Math.round(nextDst)} m til neste GYB-punkt.`
-      : `Direkte anbefalt kurs ${Math.round(nextBrg)}°.`;
+      : `Ingen SLÅ/GYB anbefalt nå – direkte kurs ${Math.round(nextBrg)}° er raskest/tryggest.`;
 
   const polarNote=rec.boatSpeed!=null && rec.twa!=null
     ? `Polar ${rec.polar.label}: ${rec.boatSpeed.toFixed(1)} kn ved TWA ${Math.round(rec.twa)}° / TWS ${Math.round(rec.twsKt)} kn.`
     : `Polar ${rec.polar.label} aktiv.`;
+  const activeTwa = Number.isFinite(w.wind_direction_10m) ? Math.abs(diff(nextBrg,w.wind_direction_10m)) : null;
+  const beatGate = rec?.polar ? Math.round(clamp(rowAtTws(rec.polar.beatAngles, rec.twsKt||kt(w.wind_speed_10m||4.7), rec.polar),32,55)) : null;
+  const gybeGate = rec?.polar ? Math.round(clamp(rowAtTws(rec.polar.gybeAngles, rec.twsKt||kt(w.wind_speed_10m||4.7), rec.polar),130,178)) : null;
+  const twaNote = Number.isFinite(activeTwa) && beatGate && gybeGate
+    ? ` TWA ${Math.round(activeTwa)}° (kryssgrense ca. ${beatGate}°, gyb-grense ca. ${gybeGate}°).`
+    : '';
   const choiceText=decision?.chosen==='tactical'?'taktisk rute':'direkte/sikker rute';
   $('advice').textContent=`Følg rød rute mot ${t.name}. ${tacticText}`;
-  $('details').textContent=`Valg: ${choiceText}. ${tacticalDecisionText(decision)}. ${tacticalWhyText(decision)} Peiling ${Math.round(brg)}°, avstand ${Math.round(dst)} m. Live fart ${Number.isFinite(pos.sog)?kt(pos.sog).toFixed(1):'–'} kn / kurs ${Number.isFinite(pos.cog)?Math.round(pos.cog):'–'}°. ${polarNote}`;
+  $('details').textContent=`Valg: ${choiceText}. ${tacticalDecisionText(decision)}. ${tacticalWhyText(decision)}${twaNote} Peiling ${Math.round(brg)}°, avstand ${Math.round(dst)} m. Live fart ${Number.isFinite(pos.sog)?kt(pos.sog).toFixed(1):'–'} kn / kurs ${Number.isFinite(pos.cog)?Math.round(pos.cog):'–'}°. ${polarNote}`;
 
   let timeDiffText='–';
   if(decision?.directEta && decision?.tacticalEta){

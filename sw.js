@@ -1,10 +1,10 @@
-const CACHE = 'regatta-pwa-2026-06-24-v24-trustworthy-laylines';
+const CACHE = 'regatta-pwa-2026-06-24-v26-tactical-preview-status';
 const ASSETS = [
   './',
   './index.html',
-  './app.js?v=2026-06-24-v24-trustworthy-laylines',
-  './style.css?v=2026-06-24-v24-trustworthy-laylines',
-  './manifest.webmanifest?v=2026-06-24-v24-trustworthy-laylines',
+  './app.js?v=2026-06-24-v26-tactical-preview-status',
+  './style.css?v=2026-06-24-v26-tactical-preview-status',
+  './manifest.webmanifest?v=2026-06-24-v26-tactical-preview-status',
   './icon-192.png',
   './icon-512.png'
 ];

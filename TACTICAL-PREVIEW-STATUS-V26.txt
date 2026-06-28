@@ -1,0 +1,9 @@
+V26 - taktiske forslag uten å gjøre aktiv rute urolig
+
+Endringer:
+- Aktiv rød rute er fortsatt konservativ: SLÅ/GYB vises bare når det er nødvendig eller tydelig raskere.
+- Live anbefaling sier nå tydelig når ingen SLÅ/GYB anbefales, og hvorfor.
+- Detaljlinjen viser TWA, kryssgrense og gyb-grense slik at du kan se hvorfor direkte kurs velges.
+- Full bane-modus viser igjen små oransje taktiske forslag på kommende legg, men bare som plan-preview og kun når ETA/no-go-logikken faktisk velger taktisk rute.
+- Fremtidige SLÅ/GYB-labels begrenses til få punkter per legg for å unngå rot.
+- Testene er kjørt og passerer.
