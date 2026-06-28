@@ -25,7 +25,7 @@ let showFullTacticalCourse = localStorage.regattaShowFullTacticalCourse === '1';
 let tacticalRouteLock = { key: '', route: null, turns: [], mode: 'direct', nextIdx: 1, createdAt: 0, pending: false, decision: null };
 let boatNav = { active: null, route: [], idx: 1, pending: false, source: 'client' };
 let recommendedNav = { key: '', route: null, pending: false, error: null, t: 0, decision: null };
-const APP_VERSION = '2026-06-24-v26-tactical-preview-status';
+const APP_VERSION = '2026-06-24-v27-clean-plan-active-only';
 const SAME_ORIGIN_ROUTE_API = ['localhost','127.0.0.1'].includes(location.hostname) || !/github\.io$/i.test(location.hostname)
   ? location.origin
   : '';
@@ -2180,70 +2180,26 @@ function compactFutureTurns(turns){
 
 function drawFutureTacticalCourse(){
   clearFutureTacticalOverlays();
-  if(!showFullTacticalCourse || !marks.length || active>=marks.length-1 || !weather)return;
+  if(!showFullTacticalCourse || !marks.length || active>=marks.length-1)return;
 
-  // v26: Full bane-modus viser igjen taktiske forslag for kommende legg, men
-  // kun som en svak plan-preview.  Aktiv legg er fortsatt eneste røde
-  // navigasjonsrute.  Fremtidige SLÅ/GYB-punkter vises bare når ETA/no-go-
-  // beslutningen faktisk velger taktisk rute, og begrenses til få, små labels.
+  // v27: Full bane-visning skal ikke komme med "anbefalte" kurser, SLÅ eller
+  // GYB på fremtidige legger.  De tidligere oransje taktiske forhåndsvisningene
+  // kunne se ut som aktive kommandoer og havnet ofte utenfor en fornuftig
+  // regattalegg.  Derfor viser full bane nå bare en rolig, tynn planlinje for
+  // kommende legger.  Den ENESTE navigasjonsanbefalingen er aktiv legg i rødt.
   for(let i=active+1;i<marks.length;i++){
     const fromMark=marks[i-1], toMark=marks[i];
     const base=futureLegBaseRoute(fromMark,toMark);
     if(!Array.isArray(base)||base.length<2)continue;
 
-    const a=base[0], b=base[base.length-1];
-    const legCourse=bearing(a[0],a[1],b[0],b[1]);
-    let plan={route:base,turns:[],mode:'direct',decision:null};
-    try{
-      const rec=legRecFromPoints(a,b);
-      // Use leg bearing as bias for future preview.  The current boat COG should
-      // not decide which side a future leg starts on.
-      const expanded=expandLegWithTactics(a,b,rec,{future:true,biasCourse:legCourse});
-      if(expanded.mode!=='direct' && expanded.points?.length>2){
-        const annotated=annotateTurnIndexes(expanded.points,expanded.turns||[]);
-        const decision=makeRouteDecision({
-          directEta:routeEta(base,{strictDirect:true}),
-          tacticalEta:routeEta(expanded.points,{strictDirect:false}),
-          mode:expanded.mode,
-          turns:annotated,
-          directRoute:base,
-          tacticalRoute:expanded.points
-        });
-        if(decision.chosen==='tactical'){
-          plan={route:expanded.points,turns:annotated,mode:expanded.mode,decision};
-        }
-      }
-    }catch(err){
-      console.warn('Future tactical preview skipped',err);
-    }
-
-    const useTactical=plan.mode!=='direct' && Array.isArray(plan.turns) && plan.turns.length;
-    const drawPts=useTactical ? plan.route : base;
-    const line=L.polyline(drawPts,{
-      color:'#fb923c',
-      weight:useTactical?2.8:2.3,
-      opacity:useTactical ? .66 : .48,
-      dashArray:useTactical?'5 10':'4 12',
+    const line=L.polyline(base,{
+      color:'#f59e0b',
+      weight:2.1,
+      opacity:.42,
+      dashArray:'4 12',
       interactive:false
     }).addTo(map);
     futureTacticalOverlays.push(line);
-
-    const c=Math.round(legCourse);
-    const d=distance(a[0],a[1],b[0],b[1]);
-    const mid=dest(a[0],a[1],c,Math.min(d*.44,360));
-    const html=useTactical
-      ? `<div class="futureLegLabel"><b>Legg ${i+1}</b><span>${plan.mode==='lens'?'GYB':'SLÅ'} plan</span></div>`
-      : `<div class="futureLegLabel"><b>Legg ${i+1}</b><span>${c}° direkte</span></div>`;
-    const marker=L.marker([mid.lat,mid.lon],{icon:L.divIcon({html,iconSize:[76,26],iconAnchor:[38,13],className:'tackIcon'}),interactive:false}).addTo(map);
-    futureTacticalOverlays.push(marker);
-
-    if(useTactical){
-      for(const turn of compactFutureTurns(plan.turns)){
-        const thtml=`<div class="futureTackLabel"><b>${turn.label}</b><span>${turn.course}°</span></div>`;
-        const tmarker=L.marker([turn.lat,turn.lon],{icon:L.divIcon({html:thtml,iconSize:[42,24],iconAnchor:[21,12],className:'tackIcon'}),interactive:false}).addTo(map);
-        futureTacticalOverlays.push(tmarker);
-      }
-    }
   }
 }
 

@@ -8,12 +8,12 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="Regatta">
   <!-- Preserve manifest and icons exactly as in the original minified file -->
-  <link rel="manifest" href="manifest.webmanifest?v=2026-06-24-v26-tactical-preview-status">
+  <link rel="manifest" href="manifest.webmanifest?v=2026-06-24-v27-clean-plan-active-only">
   <link rel="icon" href="icon-192.png">
   <link rel="apple-touch-icon" href="icon-192.png">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <title>Never 2 late Regatta v3</title>
-  <link rel="stylesheet" href="style.css?v=2026-06-24-v26-tactical-preview-status">
+  <link rel="stylesheet" href="style.css?v=2026-06-24-v27-clean-plan-active-only">
 </head>
 <body>
 <header>
@@ -88,7 +88,7 @@
       <div><label>ETA</label><b id="tacticalEta">–</b></div>
       <div><label>Hvorfor</label><b id="tacticalWhy">–</b></div>
     </div>
-    <p class="muted">Rød taktisk rute er stabilisert for navigasjon. Aktiv legg vises tydelig rødt. Appen sammenligner nå direkte/sikker rute mot taktisk SLÅ/GYB-rute og viser bare taktisk rute når ETA tilsier gevinst eller direkte kurs er dårlig/umulig.</p>
+    <p class="muted">Rød taktisk rute er stabilisert for navigasjon. Kun aktiv legg gir navigasjonsanbefaling med kurs, SLÅ/GYB og ETA. Full bane viser bare rolige planlinjer for kommende legg, slik at fremtidige forslag ikke forveksles med aktiv anbefaling.</p>
   </section>
   <!-- New panel for time difference between recommended and actual course. -->
   <section class="panel" id="timediffPanel">
@@ -193,6 +193,6 @@
   </section>
 </main>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="app.js?v=2026-06-24-v26-tactical-preview-status"></script>
+<script src="app.js?v=2026-06-24-v27-clean-plan-active-only"></script>
 </body>
 </html>

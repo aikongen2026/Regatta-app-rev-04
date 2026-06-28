@@ -1,0 +1,12 @@
+V27 - Rydding av anbefalt kurs / full bane
+
+Problem:
+- Oransje forhåndsvisning for kommende legger viste kurs, direkte/SLÅ/GYB-labels og kunne se ut som anbefalte kommandoer.
+- Dette gjorde kartet misvisende og kunne gi inntrykk av at appen anbefalte rare ruter utenfor banen.
+
+Endring:
+- Kun aktiv legg får rød anbefalt rute, kurslabel og eventuelle SLÅ/GYB-punkter.
+- Full bane viser nå bare tynne oransje planlinjer for kommende legger.
+- Fremtidige taktiske kurs-/SLÅ-/GYB-labels er fjernet.
+- Aktiv legg fortsetter automatisk å bli rød når bøye rundes.
+- Startpunkt-fixen fra tidligere versjoner er beholdt.
