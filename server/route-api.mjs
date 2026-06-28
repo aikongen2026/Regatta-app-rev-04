@@ -386,7 +386,7 @@ export function startServer(port=8787){
     cors(res); if(req.method==='OPTIONS'){res.writeHead(204).end(); return;}
     const url=new URL(req.url,`http://${req.headers.host||'localhost'}`);
     try{
-      if(url.pathname==='/health'){res.writeHead(200,{'content-type':'application/json'}).end(JSON.stringify({ok:true,version:'v20-eta-start-report',ways:osmCoastlineWays.length})); return;}
+      if(url.pathname==='/health'){res.writeHead(200,{'content-type':'application/json'}).end(JSON.stringify({ok:true,version:'v14-route-weather-field',ways:osmCoastlineWays.length})); return;}
 
       if(url.pathname==='/weather'){
         const lat=Number(url.searchParams.get('lat')), lon=Number(url.searchParams.get('lon'));

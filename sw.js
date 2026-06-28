@@ -1,10 +1,10 @@
-const CACHE = 'regatta-pwa-2026-06-24-v27-clean-plan-active-only';
+const CACHE = 'regatta-pwa-2026-06-24-v28-restored-stable-tactics';
 const ASSETS = [
   './',
   './index.html',
-  './app.js?v=2026-06-24-v27-clean-plan-active-only',
-  './style.css?v=2026-06-24-v27-clean-plan-active-only',
-  './manifest.webmanifest?v=2026-06-24-v27-clean-plan-active-only',
+  './app.js?v=2026-06-24-v28-restored-stable-tactics',
+  './style.css?v=2026-06-24-v28-restored-stable-tactics',
+  './manifest.webmanifest?v=2026-06-24-v28-restored-stable-tactics',
   './icon-192.png',
   './icon-512.png'
 ];

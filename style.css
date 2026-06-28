@@ -432,27 +432,3 @@ button.activeMode {
 .futureLegLabel span {
   display: block;
 }
-
-.report-link {
-  display: inline-flex;
-  align-items: center;
-  color: #93c5fd;
-  text-decoration: none;
-  padding: .45rem .2rem;
-  font-size: .88rem;
-}
-.report-link:hover { text-decoration: underline; }
-.start-mode-panel {
-  border: 1px solid rgba(34,197,94,.22);
-}
-#tacticalWhy {
-  font-size: .78rem;
-}
-#tacticalEta {
-  font-size: .78rem;
-}
-@media (min-width: 921px) {
-  .tactical-grid {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-}

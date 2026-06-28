@@ -1,0 +1,8 @@
+v28
+- Taktikkmotoren er rullet tilbake til stabil v19-baseline.
+- Rød anbefalt rute beregnes bare for aktiv legg, fra faktisk båtposisjon til faktisk aktivt merke.
+- Ingen 900 m projeksjon forbi merket.
+- SLÅ/GYB vises bare når aktiv legg er nær no-go/kryss eller svært dyp lens.
+- Kommende legg er bare oransje planlinjer.
+- Manuelt valgt båt-startpunkt lagres separat og snappes ikke til nearestWater().
+- Demo starter fra manuelt valgt båt-startpunkt dersom det finnes.
