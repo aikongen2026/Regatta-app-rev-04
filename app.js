@@ -17,7 +17,7 @@ let showFullTacticalCourse = localStorage.regattaShowFullTacticalCourse === '1';
 let tacticalRouteLock = { key: '', route: null, turns: [], mode: 'direct', nextIdx: 1, createdAt: 0, pending: false };
 let boatNav = { active: null, route: [], idx: 1, pending: false, source: 'client' };
 let recommendedNav = { key: '', route: null, pending: false, error: null, t: 0 };
-const APP_VERSION = '2026-06-24-v18-auto-leg-handover';
+const APP_VERSION = '2026-06-24-v19-orc-polar-verified';
 const SAME_ORIGIN_ROUTE_API = ['localhost','127.0.0.1'].includes(location.hostname) || !/github\.io$/i.test(location.hostname)
   ? location.origin
   : '';
@@ -26,9 +26,20 @@ const query = new URLSearchParams(location.search);
 const routeApiParam = query.get('routeApi');
 if(routeApiParam && routeApiParam !== 'off') localStorage.regattaRouteApiUrl = routeApiParam;
 const ROUTE_API_URL = (routeApiParam === 'off' ? '' : (routeApiParam || localStorage.regattaRouteApiUrl || window.REGATTA_ROUTE_API_URL || DEFAULT_ROUTE_API_URL || '')).replace(/\/$/,'');
+const ORC_POLAR_SOURCE = {
+  boat: 'Late NOR 6263 / Nessy 94',
+  year: 2026,
+  verified: '2026-06-28',
+  certificates: {
+    orc: 'https://data.orc.org/public/WPub.dll/CC/251240',
+    doublehanded: 'https://data.orc.org/public/WPub.dll/CC/251263',
+    nonspin: 'https://data.orc.org/public/WPub.dll/CC/251297'
+  }
+};
+
 const ORC_POLARS = {
   orc: {
-    label: 'ORC',
+    label: 'ORC 2026',
     windSpeeds: [4, 6, 8, 10, 12, 14, 16, 20, 24],
     beatAngles: [45.7, 42.6, 40.7, 38.8, 37.9, 37.7, 37.7, 38.4, 39.9],
     beatVMG: [2.38, 3.31, 3.98, 4.41, 4.62, 4.70, 4.74, 4.74, 4.63],
@@ -46,7 +57,7 @@ const ORC_POLARS = {
     gybeAngles: [142.0, 147.1, 151.9, 155.6, 163.3, 170.0, 178.1, 178.1, 178.1]
   },
   doublehanded: {
-    label: 'ORC DH',
+    label: 'ORC Double handed 2026',
     windSpeeds: [4, 6, 8, 10, 12, 14, 16, 20, 24],
     beatAngles: [45.4, 42.0, 40.4, 39.3, 39.3, 39.4, 39.7, 40.8, 43.2],
     beatVMG: [2.41, 3.32, 3.94, 4.29, 4.42, 4.47, 4.49, 4.44, 4.26],
@@ -64,7 +75,7 @@ const ORC_POLARS = {
     gybeAngles: [141.5, 147.1, 151.9, 155.7, 163.6, 169.6, 177.2, 177.2, 177.2]
   },
   nonspin: {
-    label: 'Non-spin',
+    label: 'Non-spin/HSF 2026',
     windSpeeds: [4, 6, 8, 10, 12, 14, 16, 20, 24],
     beatAngles: [45.7, 42.6, 40.7, 38.8, 37.9, 37.7, 37.8, 38.3, 40.0],
     beatVMG: [2.38, 3.31, 3.98, 4.41, 4.62, 4.70, 4.74, 4.74, 4.63],
