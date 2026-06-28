@@ -1,0 +1,9 @@
+FULL-TACTICAL-COURSE-V17
+
+Endringer:
+- Ny knapp: "Vis hele taktisk bane" / "Kun aktiv legg".
+- Live-modus beholdes: aktiv legg vises tykk rød stiplet rute med store SLÅ/GYB-labels.
+- Plan-modus legger i tillegg kommende legg på kartet som tynn oransje taktisk rute.
+- Kommende SLÅ/GYB-punkter vises mindre og mer diskret for å unngå rot under seilas.
+- Aktiv legg og stabil låsing av SLÅ/GYB-punkter fra v15/v16 er beholdt.
+- Cache-versjon oppdatert til v17.

@@ -8,12 +8,12 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="Regatta">
   <!-- Preserve manifest and icons exactly as in the original minified file -->
-  <link rel="manifest" href="manifest.webmanifest?v=2026-06-24-v16-start-point-fix">
+  <link rel="manifest" href="manifest.webmanifest?v=2026-06-24-v17-full-tactical-course">
   <link rel="icon" href="icon-192.png">
   <link rel="apple-touch-icon" href="icon-192.png">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <title>Never 2 late Regatta v3</title>
-  <link rel="stylesheet" href="style.css?v=2026-06-24-v14-route-weather-field">
+  <link rel="stylesheet" href="style.css?v=2026-06-24-v17-full-tactical-course">
 </head>
 <body>
 <header>
@@ -27,6 +27,7 @@
     <button id="sample" class="secondary">Hankø demo</button>
     <button id="setBoatStart" class="secondary">Endre båtens startpunkt</button>
     <button id="refreshTactics" class="secondary">Oppdater taktisk rute</button>
+    <button id="toggleFullTactics" class="secondary">Vis hele taktisk bane</button>
     <button id="exportNavionics" class="secondary">Eksporter til Navionics (GPX)</button>
     <button id="install" class="secondary" hidden>Installer app</button>
     <label class="map-select-label">Kart
@@ -84,7 +85,7 @@
       <div><label>Data</label><b id="tacticalDataStatus">–</b></div>
       <div><label>Kart</label><b id="tacticalMarineStatus">–</b></div>
     </div>
-    <p class="muted">Rød taktisk rute er stabilisert for navigasjon. Den oppdateres når vær/strøm, aktivt merke eller tydelig ruteavvik tilsier at en ny plan er bedre. Bruk «Oppdater taktisk rute» ved behov.</p>
+    <p class="muted">Rød taktisk rute er stabilisert for navigasjon. Aktiv legg vises tydelig rødt. Bruk «Vis hele taktisk bane» for å se kommende legg i tynn oransje planmodus. Bruk «Oppdater taktisk rute» ved behov.</p>
   </section>
   <!-- New panel for time difference between recommended and actual course. -->
   <section class="panel" id="timediffPanel">
@@ -166,6 +167,6 @@
   </section>
 </main>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="app.js?v=2026-06-24-v14-route-weather-field"></script>
+<script src="app.js?v=2026-06-24-v17-full-tactical-course"></script>
 </body>
 </html>

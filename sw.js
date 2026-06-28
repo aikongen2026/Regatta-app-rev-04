@@ -1,10 +1,10 @@
-const CACHE = 'regatta-pwa-2026-06-24-v16-start-point-fix';
+const CACHE = 'regatta-pwa-2026-06-24-v17-full-tactical-course';
 const ASSETS = [
   './',
   './index.html',
-  './app.js?v=2026-06-24-v16-start-point-fix',
-  './style.css?v=2026-06-24-v16-start-point-fix',
-  './manifest.webmanifest?v=2026-06-24-v16-start-point-fix',
+  './app.js?v=2026-06-24-v17-full-tactical-course',
+  './style.css?v=2026-06-24-v17-full-tactical-course',
+  './manifest.webmanifest?v=2026-06-24-v17-full-tactical-course',
   './icon-192.png',
   './icon-512.png'
 ];

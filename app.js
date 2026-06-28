@@ -7,16 +7,17 @@ let vectorField = [], vectorFetchKey = '', vectorFetchInFlight = false, lastVect
 let routeWeatherField = { key: '', points: [], sig: '', t: 0 }, routeWeatherFetchInFlight = false;
 let pendingBoatStart = false, boatMarker = null, searchMarker = null;
 let gpsWatchId = null;
-let routeLine = null, redRouteLine = null, overlays = [], tackOverlays = [];
+let routeLine = null, redRouteLine = null, overlays = [], tackOverlays = [], futureTacticalOverlays = [];
 let searchResultsData = [];
 let lastTacticalPlan = {turns: [], mode: 'direct', next: null};
+let showFullTacticalCourse = localStorage.regattaShowFullTacticalCourse === '1';
 // Lock the tactical route so tack/gybe points do not jump every time the
 // boat position updates.  The lock is reset only when the active mark,
 // weather signature or polar setup changes enough to justify a new plan.
 let tacticalRouteLock = { key: '', route: null, turns: [], mode: 'direct', nextIdx: 1, createdAt: 0, pending: false };
 let boatNav = { active: null, route: [], idx: 1, pending: false, source: 'client' };
 let recommendedNav = { key: '', route: null, pending: false, error: null, t: 0 };
-const APP_VERSION = '2026-06-24-v16-start-point-fix';
+const APP_VERSION = '2026-06-24-v17-full-tactical-course';
 const SAME_ORIGIN_ROUTE_API = ['localhost','127.0.0.1'].includes(location.hostname) || !/github\.io$/i.test(location.hostname)
   ? location.origin
   : '';
@@ -1598,10 +1599,86 @@ function recommendedRouteTo(target){
 }
 
 
+
+function clearFutureTacticalOverlays(){
+  futureTacticalOverlays.forEach(o=>o.remove?.());
+  futureTacticalOverlays=[];
+}
+
+function setFullTacticalButtonLabel(){
+  const btn=$('toggleFullTactics');
+  if(btn){
+    btn.textContent = showFullTacticalCourse ? 'Kun aktiv legg' : 'Vis hele taktisk bane';
+    btn.classList.toggle('activeMode', !!showFullTacticalCourse);
+  }
+}
+
+function legRecFromPoints(A,B){
+  return {
+    course: bearing(A[0],A[1],B[0],B[1]),
+    bearing: bearing(A[0],A[1],B[0],B[1]),
+    polar: currentPolar()
+  };
+}
+
+function futureLegBaseRoute(fromMark,toMark){
+  if(!fromMark||!toMark)return [];
+  const A=[fromMark.lat,fromMark.lon], B=[toMark.lat,toMark.lon];
+  let base=[];
+  try{ base=waterRoute(A,B); }catch{ base=[A,B]; }
+  return Array.isArray(base)&&base.length>1 ? base : [A,B];
+}
+
+function drawFutureTacticalCourse(){
+  clearFutureTacticalOverlays();
+  if(!showFullTacticalCourse || !marks.length || active>=marks.length-1 || !weather)return;
+
+  for(let i=active+1;i<marks.length;i++){
+    const fromMark=marks[i-1], toMark=marks[i];
+    const base=futureLegBaseRoute(fromMark,toMark);
+    if(!Array.isArray(base)||base.length<2)continue;
+
+    const midA=base[0], midB=base[base.length-1];
+    const rec=legRecFromPoints(midA,midB);
+    const plan=makeTacticalRoute(base,rec);
+    const route=Array.isArray(plan.route)&&plan.route.length>1 ? plan.route : base;
+
+    const line=L.polyline(route,{
+      color:'#fb923c',
+      weight:3,
+      opacity:.62,
+      dashArray:'4 10',
+      interactive:false
+    }).addTo(map);
+    futureTacticalOverlays.push(line);
+
+    // Smaller labels for upcoming legs. Active leg remains red and larger.
+    const turns=plan.turns||[];
+    for(const turn of turns){
+      const html=`<div class="futureTackLabel"><b>${turn.label}</b><span>${turn.course}°</span></div>`;
+      const marker=L.marker([turn.lat,turn.lon],{icon:L.divIcon({html,iconSize:[38,24],iconAnchor:[19,12],className:'tackIcon'}),interactive:false}).addTo(map);
+      futureTacticalOverlays.push(marker);
+    }
+
+    if(route.length>=2){
+      const a=route[0], b=route[1];
+      const c=Math.round(bearing(a[0],a[1],b[0],b[1]));
+      const d=distance(a[0],a[1],b[0],b[1]);
+      const mid=dest(a[0],a[1],c,Math.min(d*.44,360));
+      const html=`<div class="futureLegLabel"><b>Legg ${i+1}</b><span>${c}°</span></div>`;
+      const marker=L.marker([mid.lat,mid.lon],{icon:L.divIcon({html,iconSize:[58,26],iconAnchor:[29,13],className:'tackIcon'}),interactive:false}).addTo(map);
+      futureTacticalOverlays.push(marker);
+    }
+  }
+}
+
+
 function renderRecommended(){
   if(redRouteLine){redRouteLine.remove();redRouteLine=null;}
   tackOverlays.forEach(o=>o.remove?.());
   tackOverlays=[];
+  clearFutureTacticalOverlays();
+  setFullTacticalButtonLabel();
   if(!pos||!marks.length||active>=marks.length)return;
   const t=marks[active];
   const pts=recommendedRouteTo(t);
@@ -1630,6 +1707,8 @@ function renderRecommended(){
     const marker=L.marker([turn.lat,turn.lon],{icon:L.divIcon({html,iconSize:[46,28],iconAnchor:[23,14],className:'tackIcon'})}).addTo(map);
     tackOverlays.push(marker);
   }
+
+  drawFutureTacticalCourse();
 }
 
 function update(){
@@ -2336,6 +2415,18 @@ if(refreshTacticsBtn && typeof refreshTacticsBtn.addEventListener === 'function'
     renderRecommended();
     updateTacticalPanel(tacticalRouteLock.route);
     if(pos&&weather)update();
+  });
+}
+
+const toggleFullTacticsBtn = typeof document !== 'undefined' ? document.getElementById('toggleFullTactics') : null;
+if(toggleFullTacticsBtn && typeof toggleFullTacticsBtn.addEventListener === 'function'){
+  setFullTacticalButtonLabel();
+  toggleFullTacticsBtn.addEventListener('click', ()=>{
+    showFullTacticalCourse = !showFullTacticalCourse;
+    localStorage.regattaShowFullTacticalCourse = showFullTacticalCourse ? '1' : '0';
+    setFullTacticalButtonLabel();
+    renderRecommended();
+    updateTacticalPanel(tacticalRouteLock.route);
   });
 }
 

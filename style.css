@@ -390,3 +390,45 @@ header h1 small{font-size:.72em;color:#93c5fd;background:#0f2a44;border-radius:8
     grid-template-columns: 1fr;
   }
 }
+
+
+button.activeMode {
+  border-color: rgba(251,146,60,.72);
+  box-shadow: 0 0 0 1px rgba(251,146,60,.22) inset;
+}
+
+.futureTackLabel {
+  background: rgba(251,146,60,.94);
+  color: #111827;
+  border: 1px solid rgba(255,237,213,.95);
+  border-radius: .42rem;
+  padding: .18rem .32rem;
+  box-shadow: 0 1px 4px #0008;
+  font-size: .62rem;
+  line-height: 1.02;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.futureTackLabel b,
+.futureTackLabel span {
+  display: block;
+}
+
+.futureLegLabel {
+  background: rgba(15,23,42,.78);
+  color: #fed7aa;
+  border: 1px solid rgba(251,146,60,.72);
+  border-radius: .45rem;
+  padding: .18rem .34rem;
+  box-shadow: 0 1px 4px #0008;
+  font-size: .62rem;
+  line-height: 1.05;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.futureLegLabel b,
+.futureLegLabel span {
+  display: block;
+}
