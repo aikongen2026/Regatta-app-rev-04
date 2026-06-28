@@ -1,0 +1,12 @@
+Never 2 late Regatta v22
+
+Fikser ruter som så ut til å ligge utenfor praktisk regattalegg.
+
+Endringer:
+- Rød SLÅ/GYB-rute vises nå bare når den er tydelig raskere enn direkte rute,
+  eller når direkte kurs ligger i / helt nær no-go mot vind.
+- ETA-filteret er gjort mer konservativt etter live-test.
+- Taktiske vendepunkter må holde seg innenfor en praktisk korridor rundt leggen.
+- Ruter som går bakover, blir for lange eller lager løkker rundt merket forkastes.
+- Færre og ryddigere fremtidige oransje SLÅ/GYB-labels i planvisning.
+- Aktiv rød legg skal være navigerbar og mer tillitsvekkende.

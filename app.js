@@ -21,7 +21,7 @@ let showFullTacticalCourse = localStorage.regattaShowFullTacticalCourse === '1';
 let tacticalRouteLock = { key: '', route: null, turns: [], mode: 'direct', nextIdx: 1, createdAt: 0, pending: false, decision: null };
 let boatNav = { active: null, route: [], idx: 1, pending: false, source: 'client' };
 let recommendedNav = { key: '', route: null, pending: false, error: null, t: 0, decision: null };
-const APP_VERSION = '2026-06-24-v21-layline-decision-fix';
+const APP_VERSION = '2026-06-24-v22-route-sanity-eta-fix';
 const SAME_ORIGIN_ROUTE_API = ['localhost','127.0.0.1'].includes(location.hostname) || !/github\.io$/i.test(location.hostname)
   ? location.origin
   : '';
@@ -351,43 +351,47 @@ function makeRouteDecision({directEta,tacticalEta,mode,turns,directRoute,tactica
   const tacticalSec=tacticalEta?.seconds??Infinity;
   const gainSec=directSec-tacticalSec;
   const gainPct=Number.isFinite(gainSec)&&Number.isFinite(directSec)&&directSec>0 ? gainSec/directSec : 0;
-  // v21: ETA comparison is still the main rule, but the old 5-6 % gate was
-  // too hard for close-hauled legs.  A direct course a few degrees above the
-  // beat angle can look "slightly faster" in a model, while in real sailing it
-  // is unstable and often needs layline/SLÅ guidance.  Therefore we keep
-  // tactical laylines when the direct course is close to no-go and the ETA is
-  // within model uncertainty.
-  const minGainPct=0.025;       // show tactical if it clearly wins
-  const uncertaintyPct=0.035;   // allow tactical when close-hauled and nearly equal
+
+  // v22: Trust rule.  A red SLÅ/GYB route must be measurably faster than
+  // direct/safe sailing, or the direct course must be in/very close to no-go.
+  // This is intentionally conservative: if the model is uncertain, we keep the
+  // simple direct route so the sailor can trust that red tack points mean real
+  // benefit.
+  const minGainPct=0.055;        // show tactical only when it clearly wins
+  const nearNoGoTolerance=4;     // deg above beat angle where layline is acceptable
+  const nearGybeTolerance=5;     // deg beyond gybe optimum where gybing is acceptable
+  const maxNearNoGoPenalty=0.005; // allow nearly equal only at the boundary
   const polar=currentPolar();
   const tws=directEta?.avgTwsKt ?? kt(weather?.wind?.wind_speed_10m ?? 5);
   const beat=clamp(rowAtTws(polar.beatAngles,tws,polar),32,55);
   const gybe=clamp(rowAtTws(polar.gybeAngles,tws,polar),130,178);
   const avgTwa=directEta?.avgTwa;
-  const closeUpwind=mode==='kryss' && Number.isFinite(avgTwa) && avgTwa <= beat + 16;
-  const deepDownwind=mode==='lens' && Number.isFinite(avgTwa) && avgTwa >= gybe - 14;
-  const tacticalNotMuchSlower=Number.isFinite(tacticalSec)&&Number.isFinite(directSec)&&tacticalSec <= directSec*(1+uncertaintyPct);
+  const closeUpwind=mode==='kryss' && Number.isFinite(avgTwa) && avgTwa <= beat + nearNoGoTolerance;
+  const deepDownwind=mode==='lens' && Number.isFinite(avgTwa) && avgTwa >= gybe + nearGybeTolerance;
+  const tacticalNearlyEqual=Number.isFinite(tacticalSec)&&Number.isFinite(directSec)&&tacticalSec <= directSec*(1+maxNearNoGoPenalty);
+
   let chosen='direct', reason='Direkte rute er raskest eller forskjellen er for liten.';
   let confidence='normal';
   if(mode!=='direct' && Array.isArray(turns) && turns.length){
     if(directEta?.invalidUpwind){
       chosen='tactical';
-      reason='Direkte kurs ligger for nær vinden/no-go. Kryss med SLÅ-punkter er nødvendig.';
+      reason='Direkte kurs ligger i no-go mot vinden. SLÅ/layline-rute er nødvendig.';
       confidence='høy';
     }else if(gainPct>=minGainPct && tacticalSec<directSec){
       chosen='tactical';
       reason=`Taktisk ${mode==='lens'?'gyb/lens':'kryss'} er beregnet ${Math.round(gainPct*100)} % raskere enn direkte rute.`;
-      confidence=gainPct>.08?'høy':'middels';
-    }else if((closeUpwind||deepDownwind) && tacticalNotMuchSlower){
+      confidence=gainPct>.09?'høy':'middels';
+    }else if((closeUpwind||deepDownwind) && tacticalNearlyEqual){
       chosen='tactical';
       reason=closeUpwind
-        ? `Direkte kurs er bare ${Math.round(avgTwa)}° fra vinden og nær kryssgrensen (${Math.round(beat)}°). Viser stabil SLÅ/layline-rute fordi ETA-forskjellen er innenfor usikkerheten.`
-        : `Direkte kurs er dyp lens (${Math.round(avgTwa)}° TWA). Viser GYB-rute fordi ETA-forskjellen er innenfor usikkerheten.`;
+        ? `Direkte kurs er helt nær kryssgrensen (${Math.round(avgTwa)}° TWA, beat ca. ${Math.round(beat)}°). Viser SLÅ/layline fordi ETA er omtrent lik.`
+        : `Direkte kurs er for dyp lens (${Math.round(avgTwa)}° TWA). Viser GYB-rute fordi ETA er omtrent lik.`;
       confidence='middels';
     }else{
       chosen='direct';
-      reason=`Direkte rute beholdes fordi taktisk rute ikke er raskere nok og ikke ligger innenfor nær-vind/lens-toleransen.`;
-      confidence='middels';
+      const pct=Number.isFinite(gainPct)?Math.round(gainPct*100):0;
+      reason=`Direkte rute beholdes. Taktisk rute må være minst ca. ${Math.round(minGainPct*100)} % raskere; beregnet gevinst er ${pct} %.`;
+      confidence='høy';
     }
   }else{
     reason='Direkte kurs ligger innenfor effektiv polarvinkel akkurat nå.';
@@ -1738,6 +1742,46 @@ function solveTwoCourseDistances(targetCourse, legMeters, courseA, courseB){
   return {a,b};
 }
 
+function legProgressAndCross(A,B,P){
+  const legMeters=distance(A[0],A[1],B[0],B[1]);
+  if(legMeters<1)return {progress:0,cross:0,legMeters};
+  const brg=bearing(A[0],A[1],B[0],B[1]);
+  const d=distance(A[0],A[1],P[0],P[1]);
+  const rel=rad(diff(bearing(A[0],A[1],P[0],P[1]),brg));
+  return {
+    progress:d*Math.cos(rel),
+    cross:d*Math.sin(rel),
+    legMeters
+  };
+}
+
+function routeStaysInsideLegCorridor(points,A,B,mode){
+  // The tactical route is a steering aid for a regatta leg, not an unlimited
+  // optimizer.  Keep tack/gybe points within a practical corridor around the
+  // active leg so we do not show turns "outside the course" or behind the mark.
+  if(!Array.isArray(points)||points.length<2)return false;
+  const legMeters=distance(A[0],A[1],B[0],B[1]);
+  if(legMeters<120)return true;
+  const maxCross=clamp(legMeters*(mode==='lens'?0.22:0.26), 110, mode==='lens'?360:430);
+  const before=90;
+  const after=120;
+  let prevProgress=-before;
+  for(const p of points){
+    const pc=legProgressAndCross(A,B,p);
+    if(pc.progress < -before || pc.progress > legMeters + after)return false;
+    if(Math.abs(pc.cross) > maxCross)return false;
+    // A real tack can slightly reduce progress for a moment, but if the route
+    // repeatedly moves backwards it becomes a loop and should not be recommended.
+    if(pc.progress + 65 < prevProgress)return false;
+    prevProgress=Math.max(prevProgress, pc.progress);
+  }
+  const total=routeTotalDistance(points);
+  const maxRatio=mode==='lens'?1.55:1.7;
+  if(total > legMeters*maxRatio + 120)return false;
+  return true;
+}
+
+
 function routeSegmentIsSafe(points){
   if(!Array.isArray(points)||points.length<2)return false;
   for(let i=1;i<points.length;i++){
@@ -1749,7 +1793,7 @@ function routeSegmentIsSafe(points){
 
 function expandLegWithTactics(A,B,rec,options={}){
   const legMeters=distance(A[0],A[1],B[0],B[1]);
-  if(legMeters<120 || !weather?.wind)return {points:[A,B],turns:[],mode:'direct'};
+  if(legMeters<150 || !weather?.wind)return {points:[A,B],turns:[],mode:'direct'};
   const legSample=legWeatherSample(A,B);
   const windFrom=legSample?.wind?.wind_direction_10m;
   if(!Number.isFinite(windFrom))return {points:[A,B],turns:[],mode:'direct'};
@@ -1764,14 +1808,17 @@ function expandLegWithTactics(A,B,rec,options={}){
   const recDiff=Math.abs(diff(recCourse,legBrg));
 
   let mode='direct', courseA=null, courseB=null, label='SLÅ';
-  // Upwind: direct course points too close to wind; draw alternating tacks.
-  if(twa < beat + 16 || (recDiff>12 && Math.abs(diff(recCourse,windFrom)) <= beat+14)){
+
+  // v22: Be conservative.  Do not create SLÅ/GYB geometry unless the direct
+  // bearing is actually close to no-go/deep-lens or the polar recommendation
+  // deviates meaningfully from the bearing.  ETA comparison later decides
+  // whether it is really shown.
+  if(twa < beat + 7 || (recDiff>18 && Math.abs(diff(recCourse,windFrom)) <= beat+8)){
     mode='kryss';
     courseA=norm(windFrom - beat);
     courseB=norm(windFrom + beat);
     label='SLÅ';
-  // Downwind: direct course is deeper than the polar optimum; draw gybes.
-  } else if(twa > gybe - 14 || (recDiff>12 && Math.abs(diff(recCourse,windFrom)) >= gybe-12)){
+  } else if(twa > gybe + 4 || (recDiff>18 && Math.abs(diff(recCourse,windFrom)) >= gybe+2)){
     mode='lens';
     courseA=norm(windFrom + gybe);
     courseB=norm(windFrom - gybe);
@@ -1784,8 +1831,8 @@ function expandLegWithTactics(A,B,rec,options={}){
   if(Number.isFinite(legCurrent.ocean_current_velocity) && Number.isFinite(legCurrent.ocean_current_direction)){
     const driftA=legCurrent.ocean_current_velocity*Math.sin(rad(diff(legCurrent.ocean_current_direction,courseA)));
     const driftB=legCurrent.ocean_current_velocity*Math.sin(rad(diff(legCurrent.ocean_current_direction,courseB)));
-    courseA=norm(courseA+clamp(deg(Math.atan2(driftA,3.2)),-10,10));
-    courseB=norm(courseB+clamp(deg(Math.atan2(driftB,3.2)),-10,10));
+    courseA=norm(courseA+clamp(deg(Math.atan2(driftA,3.2)),-8,8));
+    courseB=norm(courseB+clamp(deg(Math.atan2(driftB,3.2)),-8,8));
   }
 
   const solved=solveTwoCourseDistances(legBrg,legMeters,courseA,courseB);
@@ -1798,7 +1845,9 @@ function expandLegWithTactics(A,B,rec,options={}){
     first=courseB; second=courseA; firstMeters=solved.b; secondMeters=solved.a;
   }
 
-  const maxBoard=clamp(legMeters/3, 220, 850);
+  // Fewer, longer boards make the plan navigable.  Many tiny tacks around a
+  // mark looked mathematically clever but were not a trustworthy live route.
+  const maxBoard=clamp(legMeters*.58, 420, 1350);
   const boards=Math.max(1, Math.ceil(Math.max(firstMeters,secondMeters)/maxBoard));
   const stepA=firstMeters/boards, stepB=secondMeters/boards;
   const points=[A], turns=[];
@@ -1806,17 +1855,17 @@ function expandLegWithTactics(A,B,rec,options={}){
   for(let i=0;i<boards;i++){
     cur=dest(cur.lat,cur.lon,first,stepA);
     points.push([cur.lat,cur.lon]);
-    // Avoid creating a turn marker too close to target.
-    if(distance(cur.lat,cur.lon,B[0],B[1])>90)turns.push({lat:cur.lat,lon:cur.lon,label,course:Math.round(second),mode});
+    if(distance(cur.lat,cur.lon,B[0],B[1])>120)turns.push({lat:cur.lat,lon:cur.lon,label,course:Math.round(second),mode});
     cur=dest(cur.lat,cur.lon,second,stepB);
     points.push([cur.lat,cur.lon]);
-    if(i<boards-1 && distance(cur.lat,cur.lon,B[0],B[1])>90)turns.push({lat:cur.lat,lon:cur.lon,label,course:Math.round(first),mode});
+    if(i<boards-1 && distance(cur.lat,cur.lon,B[0],B[1])>120)turns.push({lat:cur.lat,lon:cur.lon,label,course:Math.round(first),mode});
   }
   points[points.length-1]=B;
 
-  // Do not draw a tactical path if it crosses land or a coarse coast mask. In narrow
-  // sounds the safe sea-route is more important than a mathematically ideal tack.
+  // Reject routes that are unsafe, loop backwards, become too long, or put
+  // turn points outside a practical corridor around the current leg.
   if(!routeSegmentIsSafe(points))return {points:[A,B],turns:[],mode:'direct'};
+  if(!routeStaysInsideLegCorridor(points,A,B,mode))return {points:[A,B],turns:[],mode:'direct'};
   return {points,turns,mode,firstCourse:first,secondCourse:second};
 }
 
@@ -1846,9 +1895,9 @@ function makeTacticalRoute(baseRoute, rec){
   });
 
   // Only show the red SLÅ/GYB geometry when it is actually faster enough,
-  // or when the direct course points into no-go. Otherwise the active red
-  // route remains direct/safe, so the sailor can trust that "slag" means
-  // a measured ETA benefit.
+  // or when direct course points into/very close to no-go. Otherwise the active red
+  // route remains direct/safe, so the sailor can trust that SLÅ/GYB means
+  // a measured benefit or a necessary layline.
   if(decision.chosen!=='tactical'){
     return {route:baseRoute,turns:[],mode:'direct',decision};
   }
@@ -1988,15 +2037,14 @@ function futureLegBaseRoute(fromMark,toMark){
 }
 
 function compactFutureTurns(turns){
-  // Future legs are only a planning preview.  Avoid showing a pile of orange
-  // SLÅ/GYB labels around one rounding mark; keep the geometry, but limit the
-  // small labels so the active red instruction remains easy to read.
+  // Future legs are only a planning preview. Keep them quiet so orange plan
+  // markers never look like active commands.
   if(!Array.isArray(turns)||!turns.length)return [];
   const kept=[];
   for(const t of turns){
-    const tooClose=kept.some(k=>distance(t.lat,t.lon,k.lat,k.lon)<130);
+    const tooClose=kept.some(k=>distance(t.lat,t.lon,k.lat,k.lon)<180);
     if(!tooClose)kept.push(t);
-    if(kept.length>=4)break;
+    if(kept.length>=2)break;
   }
   return kept;
 }
