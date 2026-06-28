@@ -1,0 +1,6 @@
+V18 automatisk overtakelse av neste legg
+
+- Live/update flytter nå aktiv legg videre så snart båten er innenfor passering-radius på aktiv bøye.
+- Dette gjelder også rundingsbøyer, ikke bare start/mål-direktepunkter.
+- Når aktiv legg byttes, nullstilles låst taktisk plan slik at neste legg umiddelbart tegnes som rød anbefalt rute.
+- Full taktisk bane kan fortsatt vise kommende legg oransje, men neste legg blir automatisk aktiv/rød når bøya er rundet.

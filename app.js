@@ -17,7 +17,7 @@ let showFullTacticalCourse = localStorage.regattaShowFullTacticalCourse === '1';
 let tacticalRouteLock = { key: '', route: null, turns: [], mode: 'direct', nextIdx: 1, createdAt: 0, pending: false };
 let boatNav = { active: null, route: [], idx: 1, pending: false, source: 'client' };
 let recommendedNav = { key: '', route: null, pending: false, error: null, t: 0 };
-const APP_VERSION = '2026-06-24-v17-full-tactical-course';
+const APP_VERSION = '2026-06-24-v18-auto-leg-handover';
 const SAME_ORIGIN_ROUTE_API = ['localhost','127.0.0.1'].includes(location.hostname) || !/github\.io$/i.test(location.hostname)
   ? location.origin
   : '';
@@ -1711,8 +1711,31 @@ function renderRecommended(){
   drawFutureTacticalCourse();
 }
 
+
+function autoAdvanceActiveLegIfPassed(){
+  if(simOn || boatNav?.rounding || boatNav?.roundingPlanned)return false; // Demo-rundingsbuer håndteres av advanceBoatOnCourse.
+  if(!pos || !marks.length || active>=marks.length-1)return false;
+  const m=marks[active];
+  if(!m)return false;
+  const radius=+$('radius').value||60;
+  const d=distance(pos.lat,pos.lon,m.lat,m.lon);
+  if(d > radius)return false;
+
+  // Når båten er innenfor passering-radius på aktiv bøye, skal neste legg
+  // overta automatisk. Dette gjelder også rundingsbøyer i live GPS-modus.
+  // Tidligere ble rundingsbøyer holdt igjen for demo-rundingsbuen, og da
+  // kunne neste taktiske røde legg bli liggende som oransje planlinje.
+  active++;
+  resetBoatNav();
+  tacticalRouteLock = { key: '', route: null, turns: [], mode: 'direct', nextIdx: 1, createdAt: 0, pending: false };
+  recommendedNav = { key: '', route: null, pending: false, error: null, t: 0 };
+  save();
+  return true;
+}
+
 function update(){
   if(!pos||!weather)return;
+  autoAdvanceActiveLegIfPassed();
   if(active>=marks.length){$('leg').innerHTML=`Ferdig`;setStatus('Ferdig');return;}
   const t=marks[active];
   const brg=bearing(pos.lat,pos.lon,t.lat,t.lon);
@@ -1772,7 +1795,6 @@ function update(){
   }
   const tdEl = $('timediff');
   if(tdEl) tdEl.textContent = timeDiffText;
-  if(!shouldRoundActiveMark() && dst < (+$('radius').value||60) && active < marks.length-1){active++;resetBoatNav();save();}
   render();
 }
 
