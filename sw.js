@@ -1,10 +1,10 @@
-const CACHE = 'regatta-pwa-2026-06-24-v20-eta-start-report';
+const CACHE = 'regatta-pwa-2026-06-24-v21-layline-decision-fix';
 const ASSETS = [
   './',
   './index.html',
-  './app.js?v=2026-06-24-v20-eta-start-report',
-  './style.css?v=2026-06-24-v20-eta-start-report',
-  './manifest.webmanifest?v=2026-06-24-v20-eta-start-report',
+  './app.js?v=2026-06-24-v21-layline-decision-fix',
+  './style.css?v=2026-06-24-v21-layline-decision-fix',
+  './manifest.webmanifest?v=2026-06-24-v21-layline-decision-fix',
   './icon-192.png',
   './icon-512.png'
 ];

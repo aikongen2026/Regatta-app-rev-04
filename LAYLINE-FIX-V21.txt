@@ -1,0 +1,10 @@
+REGATTA APP V21 - LAYLINE / SLÅ DECISION FIX
+
+Endret etter test:
+- Aktiv rød rute går ikke lenger for lett tilbake til ren direkte kurs når leggen er nær kryss/no-go.
+- ETA-sammenligning er beholdt, men med en praktisk usikkerhetsmargin:
+  * taktisk rute velges hvis den er klart raskere
+  * eller hvis direkte kurs ligger nær kryss/lens-grensen og ETA-forskjellen er liten
+- Kryss-/lens-deteksjon er litt bredere, slik at SLÅ/GYB-rute blir vist når den er nyttig å navigere etter.
+- Oransje fremtidige SLÅ/GYB-labels er komprimert for å unngå label-klynger rundt bøyer.
+- Aktiv legg er fortsatt den røde ruten; kommende legg er bare planvisning når "Vis hele taktisk bane" er aktiv.

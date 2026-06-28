@@ -21,7 +21,7 @@ let showFullTacticalCourse = localStorage.regattaShowFullTacticalCourse === '1';
 let tacticalRouteLock = { key: '', route: null, turns: [], mode: 'direct', nextIdx: 1, createdAt: 0, pending: false, decision: null };
 let boatNav = { active: null, route: [], idx: 1, pending: false, source: 'client' };
 let recommendedNav = { key: '', route: null, pending: false, error: null, t: 0, decision: null };
-const APP_VERSION = '2026-06-24-v20-eta-start-report';
+const APP_VERSION = '2026-06-24-v21-layline-decision-fix';
 const SAME_ORIGIN_ROUTE_API = ['localhost','127.0.0.1'].includes(location.hostname) || !/github\.io$/i.test(location.hostname)
   ? location.origin
   : '';
@@ -351,7 +351,22 @@ function makeRouteDecision({directEta,tacticalEta,mode,turns,directRoute,tactica
   const tacticalSec=tacticalEta?.seconds??Infinity;
   const gainSec=directSec-tacticalSec;
   const gainPct=Number.isFinite(gainSec)&&Number.isFinite(directSec)&&directSec>0 ? gainSec/directSec : 0;
-  const minGainPct=0.055;
+  // v21: ETA comparison is still the main rule, but the old 5-6 % gate was
+  // too hard for close-hauled legs.  A direct course a few degrees above the
+  // beat angle can look "slightly faster" in a model, while in real sailing it
+  // is unstable and often needs layline/SLÅ guidance.  Therefore we keep
+  // tactical laylines when the direct course is close to no-go and the ETA is
+  // within model uncertainty.
+  const minGainPct=0.025;       // show tactical if it clearly wins
+  const uncertaintyPct=0.035;   // allow tactical when close-hauled and nearly equal
+  const polar=currentPolar();
+  const tws=directEta?.avgTwsKt ?? kt(weather?.wind?.wind_speed_10m ?? 5);
+  const beat=clamp(rowAtTws(polar.beatAngles,tws,polar),32,55);
+  const gybe=clamp(rowAtTws(polar.gybeAngles,tws,polar),130,178);
+  const avgTwa=directEta?.avgTwa;
+  const closeUpwind=mode==='kryss' && Number.isFinite(avgTwa) && avgTwa <= beat + 16;
+  const deepDownwind=mode==='lens' && Number.isFinite(avgTwa) && avgTwa >= gybe - 14;
+  const tacticalNotMuchSlower=Number.isFinite(tacticalSec)&&Number.isFinite(directSec)&&tacticalSec <= directSec*(1+uncertaintyPct);
   let chosen='direct', reason='Direkte rute er raskest eller forskjellen er for liten.';
   let confidence='normal';
   if(mode!=='direct' && Array.isArray(turns) && turns.length){
@@ -362,10 +377,16 @@ function makeRouteDecision({directEta,tacticalEta,mode,turns,directRoute,tactica
     }else if(gainPct>=minGainPct && tacticalSec<directSec){
       chosen='tactical';
       reason=`Taktisk ${mode==='lens'?'gyb/lens':'kryss'} er beregnet ${Math.round(gainPct*100)} % raskere enn direkte rute.`;
-      confidence=gainPct>.10?'høy':'middels';
+      confidence=gainPct>.08?'høy':'middels';
+    }else if((closeUpwind||deepDownwind) && tacticalNotMuchSlower){
+      chosen='tactical';
+      reason=closeUpwind
+        ? `Direkte kurs er bare ${Math.round(avgTwa)}° fra vinden og nær kryssgrensen (${Math.round(beat)}°). Viser stabil SLÅ/layline-rute fordi ETA-forskjellen er innenfor usikkerheten.`
+        : `Direkte kurs er dyp lens (${Math.round(avgTwa)}° TWA). Viser GYB-rute fordi ETA-forskjellen er innenfor usikkerheten.`;
+      confidence='middels';
     }else{
       chosen='direct';
-      reason=`Direkte rute beholdes fordi taktisk rute ikke sparer minst ${Math.round(minGainPct*100)} %.`;
+      reason=`Direkte rute beholdes fordi taktisk rute ikke er raskere nok og ikke ligger innenfor nær-vind/lens-toleransen.`;
       confidence='middels';
     }
   }else{
@@ -1555,7 +1576,7 @@ function routeKeyForRecommendation(target, rec){
   // changes or when the user presses "Oppdater taktisk rute".
   const q=(v,step=1)=>Number.isFinite(v)?Math.round(v/step)*step:0;
   return [
-    'stable-v20',
+    'stable-v21',
     active, marks.length,
     target.lat.toFixed(5), target.lon.toFixed(5),
     currentPolarMode(),
@@ -1744,13 +1765,13 @@ function expandLegWithTactics(A,B,rec,options={}){
 
   let mode='direct', courseA=null, courseB=null, label='SLÅ';
   // Upwind: direct course points too close to wind; draw alternating tacks.
-  if(twa < beat + 10 || (recDiff>14 && Math.abs(diff(recCourse,windFrom)) <= beat+8)){
+  if(twa < beat + 16 || (recDiff>12 && Math.abs(diff(recCourse,windFrom)) <= beat+14)){
     mode='kryss';
     courseA=norm(windFrom - beat);
     courseB=norm(windFrom + beat);
     label='SLÅ';
   // Downwind: direct course is deeper than the polar optimum; draw gybes.
-  } else if(twa > gybe - 10 || (recDiff>14 && Math.abs(diff(recCourse,windFrom)) >= gybe-8)){
+  } else if(twa > gybe - 14 || (recDiff>12 && Math.abs(diff(recCourse,windFrom)) >= gybe-12)){
     mode='lens';
     courseA=norm(windFrom + gybe);
     courseB=norm(windFrom - gybe);
@@ -1966,6 +1987,20 @@ function futureLegBaseRoute(fromMark,toMark){
   return Array.isArray(base)&&base.length>1 ? base : [A,B];
 }
 
+function compactFutureTurns(turns){
+  // Future legs are only a planning preview.  Avoid showing a pile of orange
+  // SLÅ/GYB labels around one rounding mark; keep the geometry, but limit the
+  // small labels so the active red instruction remains easy to read.
+  if(!Array.isArray(turns)||!turns.length)return [];
+  const kept=[];
+  for(const t of turns){
+    const tooClose=kept.some(k=>distance(t.lat,t.lon,k.lat,k.lon)<130);
+    if(!tooClose)kept.push(t);
+    if(kept.length>=4)break;
+  }
+  return kept;
+}
+
 function drawFutureTacticalCourse(){
   clearFutureTacticalOverlays();
   if(!showFullTacticalCourse || !marks.length || active>=marks.length-1 || !weather)return;
@@ -1990,7 +2025,7 @@ function drawFutureTacticalCourse(){
     futureTacticalOverlays.push(line);
 
     // Smaller labels for upcoming legs. Active leg remains red and larger.
-    const turns=plan.turns||[];
+    const turns=compactFutureTurns(plan.turns||[]);
     for(const turn of turns){
       const html=`<div class="futureTackLabel"><b>${turn.label}</b><span>${turn.course}°</span></div>`;
       const marker=L.marker([turn.lat,turn.lon],{icon:L.divIcon({html,iconSize:[38,24],iconAnchor:[19,12],className:'tackIcon'}),interactive:false}).addTo(map);
