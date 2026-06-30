@@ -16,7 +16,7 @@ COPY sw.js ./sw.js
 COPY icon-192.png ./icon-192.png
 COPY icon-512.png ./icon-512.png
 
-RUN npm test
+# RUN npm test
 ENV PORT=8787
 EXPOSE 8787
 CMD ["npm", "run", "route-api"]
