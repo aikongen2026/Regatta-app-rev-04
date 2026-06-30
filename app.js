@@ -6,6 +6,7 @@ let line = { pin: null, boat: null }, deferredPrompt = null, simOn = false, simT
 let vectorField = [], vectorFetchKey = '', vectorFetchInFlight = false, lastVectorFetch = 0;
 let routeWeatherField = { key: '', points: [], sig: '', t: 0 }, routeWeatherFetchInFlight = false;
 let pendingBoatStart = false, boatMarker = null, searchMarker = null;
+let manualBoatStart = null;
 let gpsWatchId = null;
 let routeLine = null, redRouteLine = null, overlays = [], tackOverlays = [], futureTacticalOverlays = [];
 let searchResultsData = [];
@@ -17,7 +18,7 @@ let showFullTacticalCourse = localStorage.regattaShowFullTacticalCourse === '1';
 let tacticalRouteLock = { key: '', route: null, turns: [], mode: 'direct', nextIdx: 1, createdAt: 0, pending: false };
 let boatNav = { active: null, route: [], idx: 1, pending: false, source: 'client' };
 let recommendedNav = { key: '', route: null, pending: false, error: null, t: 0 };
-const APP_VERSION = '2026-06-24-v19-orc-polar-verified';
+const APP_VERSION = '2026-06-24-v28-restored-stable-tactics';
 const SAME_ORIGIN_ROUTE_API = ['localhost','127.0.0.1'].includes(location.hostname) || !/github\.io$/i.test(location.hostname)
   ? location.origin
   : '';
@@ -179,6 +180,25 @@ function replaceCourseStartMark(lat,lon,name='Start'){
   const rest=marks.filter(m=>m.type!=='start');
   marks=[{name:name||'Start',lat,lon,type:'start'},...rest];
   active=marks.length>1?1:0;
+}
+
+function setManualBoatStartLock(lat,lon){
+  manualBoatStart={lat,lon,t:Date.now()};
+}
+function clearManualBoatStartLock(){
+  manualBoatStart=null;
+}
+function demoStartPosition(){
+  if(manualBoatStart && Number.isFinite(manualBoatStart.lat) && Number.isFinite(manualBoatStart.lon)){
+    return {lat:manualBoatStart.lat,lon:manualBoatStart.lon,source:'manual'};
+  }
+  if(marks.length){
+    return {lat:marks[0].lat,lon:marks[0].lon,source:'course-start'};
+  }
+  if(pos && Number.isFinite(pos.lat) && Number.isFinite(pos.lon)){
+    return {lat:pos.lat,lon:pos.lon,source:'current'};
+  }
+  return {lat:59.2025,lon:10.767,source:'default'};
 }
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
@@ -810,8 +830,8 @@ function waterStep(from,course,meters){
   return !isLand(p.lat,p.lon)?{...p,cog:c0}:{...start,cog:c0};
 }
 
-function save(){localStorage.regattaV2=JSON.stringify({marks,active,line,pos});}
-function load(){try{const s=JSON.parse(localStorage.regattaV2||'{}');marks=s.marks||[];active=s.active||0;line=s.line||line;pos=s.pos||null;}catch{}}
+function save(){localStorage.regattaV2=JSON.stringify({marks,active,line,pos,manualBoatStart});}
+function load(){try{const s=JSON.parse(localStorage.regattaV2||'{}');marks=s.marks||[];active=s.active||0;line=s.line||line;pos=s.pos||null;manualBoatStart=s.manualBoatStart||null;}catch{}}
 
 const VECTOR_POSITIONS=[[18,26],[36,22],[56,25],[74,30],[25,47],[47,46],[68,52],[17,70],[39,73],[61,76],[80,68]];
 function vectorValues(sample){
@@ -1255,16 +1275,17 @@ function safeProjection(start,course,maxMeters=850){
 
 function routeKeyForRecommendation(target, rec){
   const w=weather?.wind||{}, m=weather?.marine||{};
-  // Important: do NOT include exact boat position OR detailed route-weather
-  // point signatures in this key.  v15 allowed the weather field along the leg
-  // to invalidate the tactical lock every time new API values arrived. That
-  // made the recommended course/SLÅ-points jump on the map.  v15 keeps the
-  // same stable behaviour as v13: the plan changes only on real tactical
-  // changes or when the user presses "Oppdater taktisk rute".
+  // v28: keep the plan stable, but not stale.  Earlier stable versions did not
+  // include boat position at all; after the boat moved a few hundred meters the
+  // old SLÅ/GYB geometry could still be reused.  Use a coarse position bucket
+  // instead of exact GPS so the plan updates as the boat advances without
+  // jumping on every small GPS/noise update.
   const q=(v,step=1)=>Number.isFinite(v)?Math.round(v/step)*step:0;
+  const qcoord=(v,step)=>Number.isFinite(v)?(Math.round(v/step)*step).toFixed(4):'0';
   return [
-    'stable-v15',
+    'stable-v28-active-leg',
     active, marks.length,
+    qcoord(pos?.lat,0.0010), qcoord(pos?.lon,0.0015),
     target.lat.toFixed(5), target.lon.toFixed(5),
     currentPolarMode(),
     q(w.wind_direction_10m,12),
@@ -1350,12 +1371,12 @@ function updateTacticalPanel(route){
 function routeNeedsReplan(key, lockedRoute){
   if(!Array.isArray(lockedRoute)||lockedRoute.length<2)return true;
   if(tacticalRouteLock.key!==key)return true;
-  // Keep tack points stable. Replan due to off-route only if the boat is
-  // clearly far away and the plan is not brand new; this avoids jitter while
-  // still recovering if the sailor deliberately sails a very different line.
-  if(pos && Date.now()-(tacticalRouteLock.createdAt||0)>180000){
+  // Stable, but not frozen: if the boat is clearly off the original locked
+  // route, replan after a short grace period.  This prevents the red route from
+  // pointing to old SLÅ/GYB points after the boat/demo has moved.
+  if(pos && Date.now()-(tacticalRouteLock.createdAt||0)>12000){
     const off=distancePointToRouteMeters(pos.lat,pos.lon,lockedRoute);
-    if(off>450)return true;
+    if(off>170)return true;
   }
   return false;
 }
@@ -1418,7 +1439,7 @@ function routeSegmentIsSafe(points){
 
 function expandLegWithTactics(A,B,rec,options={}){
   const legMeters=distance(A[0],A[1],B[0],B[1]);
-  if(legMeters<120 || !weather?.wind)return {points:[A,B],turns:[],mode:'direct'};
+  if(legMeters<180 || !weather?.wind)return {points:[A,B],turns:[],mode:'direct'};
   const legSample=legWeatherSample(A,B);
   const windFrom=legSample?.wind?.wind_direction_10m;
   if(!Number.isFinite(windFrom))return {points:[A,B],turns:[],mode:'direct'};
@@ -1426,21 +1447,21 @@ function expandLegWithTactics(A,B,rec,options={}){
   const twsKt=kt(legSample?.wind?.wind_speed_10m??weather.wind.wind_speed_10m??4.7);
   const polar=rec?.polar || currentPolar();
   const beat=clamp(rowAtTws(polar.beatAngles,twsKt,polar), 32, 55);
-  const gybe=clamp(rowAtTws(polar.gybeAngles,twsKt,polar), 130, 178);
+  const gybe=clamp(rowAtTws(polar.gybeAngles,twsKt,polar), 135, 178);
   const legBrg=bearing(A[0],A[1],B[0],B[1]);
   const twa=Math.abs(diff(legBrg,windFrom));
-  const recCourse=rec?.course ?? legBrg;
-  const recDiff=Math.abs(diff(recCourse,legBrg));
 
   let mode='direct', courseA=null, courseB=null, label='SLÅ';
-  // Upwind: direct course points too close to wind; draw alternating tacks.
-  if(twa < beat + 10 || (recDiff>14 && Math.abs(diff(recCourse,windFrom)) <= beat+8)){
+  // v28: conservative laylines.  Do NOT create SLÅ/GYB just because polar VMG
+  // is theoretically a little better.  Only show tactical turns when the
+  // direct course is effectively not sailable/very poor: close to no-go upwind
+  // or very deep downwind on a long leg.
+  if(twa < beat + 4){
     mode='kryss';
     courseA=norm(windFrom - beat);
     courseB=norm(windFrom + beat);
     label='SLÅ';
-  // Downwind: direct course is deeper than the polar optimum; draw gybes.
-  } else if(twa > gybe - 10 || (recDiff>14 && Math.abs(diff(recCourse,windFrom)) >= gybe-8)){
+  } else if(legMeters>450 && twa > gybe + 4){
     mode='lens';
     courseA=norm(windFrom + gybe);
     courseB=norm(windFrom - gybe);
@@ -1453,38 +1474,44 @@ function expandLegWithTactics(A,B,rec,options={}){
   if(Number.isFinite(legCurrent.ocean_current_velocity) && Number.isFinite(legCurrent.ocean_current_direction)){
     const driftA=legCurrent.ocean_current_velocity*Math.sin(rad(diff(legCurrent.ocean_current_direction,courseA)));
     const driftB=legCurrent.ocean_current_velocity*Math.sin(rad(diff(legCurrent.ocean_current_direction,courseB)));
-    courseA=norm(courseA+clamp(deg(Math.atan2(driftA,3.2)),-10,10));
-    courseB=norm(courseB+clamp(deg(Math.atan2(driftB,3.2)),-10,10));
+    courseA=norm(courseA+clamp(deg(Math.atan2(driftA,3.4)),-7,7));
+    courseB=norm(courseB+clamp(deg(Math.atan2(driftB,3.4)),-7,7));
   }
 
   const solved=solveTwoCourseDistances(legBrg,legMeters,courseA,courseB);
   if(!solved)return {points:[A,B],turns:[],mode:'direct'};
 
-  // Choose the first board from current COG if possible, otherwise from recommended course.
+  // Reject silly geometry.  A useful two-board solution should stay within a
+  // normal layline shape and not be much longer than the direct leg.
+  const totalBoard=solved.a+solved.b;
+  const maxFactor=mode==='kryss'?2.1:1.65;
+  if(totalBoard > legMeters*maxFactor)return {points:[A,B],turns:[],mode:'direct'};
+
   let first=courseA, second=courseB, firstMeters=solved.a, secondMeters=solved.b;
-  const bias=Number.isFinite(pos?.cog) ? pos.cog : recCourse;
+  // Prefer the board closest to current live/demo course, but never let this
+  // create a backwards-looking first move.
+  const bias=Number.isFinite(pos?.cog) ? pos.cog : (rec?.course ?? legBrg);
   if(Math.abs(diff(courseB,bias)) < Math.abs(diff(courseA,bias))){
     first=courseB; second=courseA; firstMeters=solved.b; secondMeters=solved.a;
   }
 
-  const maxBoard=clamp(legMeters/3, 220, 850);
-  const boards=Math.max(1, Math.ceil(Math.max(firstMeters,secondMeters)/maxBoard));
+  const boards=Math.max(1,Math.min(3,Math.ceil(Math.max(firstMeters,secondMeters)/850)));
   const stepA=firstMeters/boards, stepB=secondMeters/boards;
   const points=[A], turns=[];
   let cur={lat:A[0],lon:A[1]};
   for(let i=0;i<boards;i++){
     cur=dest(cur.lat,cur.lon,first,stepA);
     points.push([cur.lat,cur.lon]);
-    // Avoid creating a turn marker too close to target.
-    if(distance(cur.lat,cur.lon,B[0],B[1])>90)turns.push({lat:cur.lat,lon:cur.lon,label,course:Math.round(second),mode});
+    if(distance(cur.lat,cur.lon,B[0],B[1])>110)turns.push({lat:cur.lat,lon:cur.lon,label,course:Math.round(second),mode});
     cur=dest(cur.lat,cur.lon,second,stepB);
     points.push([cur.lat,cur.lon]);
-    if(i<boards-1 && distance(cur.lat,cur.lon,B[0],B[1])>90)turns.push({lat:cur.lat,lon:cur.lon,label,course:Math.round(first),mode});
+    if(i<boards-1 && distance(cur.lat,cur.lon,B[0],B[1])>110)turns.push({lat:cur.lat,lon:cur.lon,label,course:Math.round(first),mode});
   }
   points[points.length-1]=B;
 
-  // Do not draw a tactical path if it crosses land or a coarse coast mask. In narrow
-  // sounds the safe sea-route is more important than a mathematically ideal tack.
+  let routeMeters=0;
+  for(let i=1;i<points.length;i++)routeMeters+=distance(points[i-1][0],points[i-1][1],points[i][0],points[i][1]);
+  if(routeMeters > legMeters*maxFactor)return {points:[A,B],turns:[],mode:'direct'};
   if(!routeSegmentIsSafe(points))return {points:[A,B],turns:[],mode:'direct'};
   return {points,turns,mode,firstCourse:first,secondCourse:second};
 }
@@ -1503,13 +1530,28 @@ function makeTacticalRoute(baseRoute, rec){
 }
 
 
+function activeLegBaseRoute(from,target){
+  const A=[from.lat,from.lon], B=[target.lat,target.lon];
+  const direct=[A,B];
+  if(routeSegmentIsSafe(direct))return {route:direct, directClear:true};
+  let safe=null;
+  try{ safe=waterRoute(A,B); }catch{ safe=null; }
+  if(Array.isArray(safe)&&safe.length>1)return {route:safe, directClear:false};
+  return {route:direct, directClear:false};
+}
+
 function recommendedRouteTo(target){
   const from={lat:pos.lat,lon:pos.lon};
   const rec=recommendedCourseTo(target);
-  const safe=safeProjection(from,rec.course,900);
-  requestRouteWeatherField(safe);
-  const fallbackPlan=makeTacticalRoute(safe,rec);
-  const key=routeKeyForRecommendation(target,rec);
+  const base=activeLegBaseRoute(from,target);
+  requestRouteWeatherField(base.route);
+  // Only apply SLÅ/GYB to a clear active leg from boat to the actual mark.  If
+  // a safe sea-route is needed around land/shallows, draw that route directly
+  // and do not sprinkle tactical points on small sub-segments.
+  const fallbackPlan=base.directClear
+    ? makeTacticalRoute(base.route,rec)
+    : {route:base.route,turns:[],mode:'safe'};
+  const key=routeKeyForRecommendation(target,rec)+'|'+(base.directClear?'clear':'safe');
 
   function useLockedPlan(plan){
     const idx=advanceLockedTacticalProgress(plan.route);
@@ -1524,91 +1566,26 @@ function recommendedRouteTo(target){
     return visibleRoute;
   }
 
-  // If we already have a valid locked route, keep it.  This is the main fix
-  // for the jumping SLÅ/GYB points seen during live GPS updates.
   if(!routeNeedsReplan(key, tacticalRouteLock.route)){
     return useLockedPlan(tacticalRouteLock);
   }
 
-  // If we have no backend route API, lock the local fallback plan.
-  if(!ROUTE_API_URL){
-    tacticalRouteLock={
-      key,
-      route:fallbackPlan.route,
-      turns:fallbackPlan.turns||[],
-      mode:fallbackPlan.mode||'direct',
-      nextIdx:1,
-      createdAt:Date.now(),
-      pending:false
-    };
-    return useLockedPlan(tacticalRouteLock);
-  }
-
-  // If a server-computed route for the same stable key already exists, lock it.
-  if(recommendedNav.key===key && Array.isArray(recommendedNav.route)){
-    tacticalRouteLock={
-      key,
-      route:recommendedNav.route,
-      turns:recommendedNav.turns||[],
-      mode:recommendedNav.mode||'direct',
-      nextIdx:Math.max(1,tacticalRouteLock.nextIdx||1),
-      createdAt:tacticalRouteLock.createdAt||Date.now(),
-      pending:false
-    };
-    return useLockedPlan(tacticalRouteLock);
-  }
-
-  // While a new route is being calculated, keep drawing the previous locked
-  // plan if it exists.  This prevents visual jumping while async routing is in
-  // flight.
-  if(Array.isArray(tacticalRouteLock.route) && tacticalRouteLock.route.length>1 && tacticalRouteLock.key){
-    if(!recommendedNav.pending || recommendedNav.key!==key){
-      recommendedNav={key,route:recommendedNav.route,pending:true,error:null,t:Date.now(),turns:recommendedNav.turns||[],mode:recommendedNav.mode||'direct'};
-      fetchServerRoute(from, navTargetForMark(target), {clearance:28, grid:42, margin:1600})
-        .then(data=>{
-          if(recommendedNav.key!==key)return;
-          requestRouteWeatherField(data.route);
-          const tactical=makeTacticalRoute(data.route,rec);
-          recommendedNav={key,route:tactical.route,turns:tactical.turns,mode:tactical.mode,pending:false,error:null,t:Date.now()};
-          tacticalRouteLock={key,route:tactical.route,turns:tactical.turns,mode:tactical.mode,nextIdx:1,createdAt:Date.now(),pending:false};
-          renderRecommended();
-        })
-        .catch(err=>{
-          console.warn('Recommended server route failed',err);
-          if(recommendedNav.key!==key)return;
-          recommendedNav={key,route:fallbackPlan.route,turns:fallbackPlan.turns,mode:fallbackPlan.mode,pending:false,error:err.message||String(err),t:Date.now()};
-          tacticalRouteLock={key,route:fallbackPlan.route,turns:fallbackPlan.turns,mode:fallbackPlan.mode,nextIdx:1,createdAt:Date.now(),pending:false};
-          renderRecommended();
-        });
-    }
-    return useLockedPlan(tacticalRouteLock);
-  }
-
-  // No locked route yet: start a server route request and lock a safe local
-  // fallback immediately so the sailor has stable guidance right away.
-  tacticalRouteLock={key,route:fallbackPlan.route,turns:fallbackPlan.turns||[],mode:fallbackPlan.mode||'direct',nextIdx:1,createdAt:Date.now(),pending:true};
-  if(!recommendedNav.pending || recommendedNav.key!==key){
-    recommendedNav={key,route:null,pending:true,error:null,t:Date.now(),turns:[],mode:'direct'};
-    fetchServerRoute(from, navTargetForMark(target), {clearance:28, grid:42, margin:1600})
-      .then(data=>{
-        if(recommendedNav.key!==key)return;
-        requestRouteWeatherField(data.route);
-          const tactical=makeTacticalRoute(data.route,rec);
-        recommendedNav={key,route:tactical.route,turns:tactical.turns,mode:tactical.mode,pending:false,error:null,t:Date.now()};
-        tacticalRouteLock={key,route:tactical.route,turns:tactical.turns,mode:tactical.mode,nextIdx:1,createdAt:Date.now(),pending:false};
-        renderRecommended();
-      })
-      .catch(err=>{
-        console.warn('Recommended server route failed',err);
-        if(recommendedNav.key!==key)return;
-        recommendedNav={key,route:fallbackPlan.route,turns:fallbackPlan.turns,mode:fallbackPlan.mode,pending:false,error:err.message||String(err),t:Date.now()};
-        tacticalRouteLock={key,route:fallbackPlan.route,turns:fallbackPlan.turns,mode:fallbackPlan.mode,nextIdx:1,createdAt:Date.now(),pending:false};
-        renderRecommended();
-      });
-  }
+  // v28 intentionally locks the deterministic local active-leg plan immediately
+  // and does not let async server routing replace the tactical geometry.  This
+  // removes the misleading jumps and "old" SLÅ/GYB points that appeared in
+  // later experimental versions.
+  recommendedNav={key,route:fallbackPlan.route,turns:fallbackPlan.turns||[],mode:fallbackPlan.mode||'direct',pending:false,error:null,t:Date.now()};
+  tacticalRouteLock={
+    key,
+    route:fallbackPlan.route,
+    turns:fallbackPlan.turns||[],
+    mode:fallbackPlan.mode||'direct',
+    nextIdx:1,
+    createdAt:Date.now(),
+    pending:false
+  };
   return useLockedPlan(tacticalRouteLock);
 }
-
 
 
 function clearFutureTacticalOverlays(){
@@ -1649,37 +1626,25 @@ function drawFutureTacticalCourse(){
     const base=futureLegBaseRoute(fromMark,toMark);
     if(!Array.isArray(base)||base.length<2)continue;
 
-    const midA=base[0], midB=base[base.length-1];
-    const rec=legRecFromPoints(midA,midB);
-    const plan=makeTacticalRoute(base,rec);
-    const route=Array.isArray(plan.route)&&plan.route.length>1 ? plan.route : base;
-
-    const line=L.polyline(route,{
+    // v28: future legs are overview only.  Tactical SLÅ/GYB is drawn only when
+    // the leg becomes active, so the map cannot look like many competing
+    // recommendations.
+    const line=L.polyline(base,{
       color:'#fb923c',
       weight:3,
-      opacity:.62,
+      opacity:.58,
       dashArray:'4 10',
       interactive:false
     }).addTo(map);
     futureTacticalOverlays.push(line);
 
-    // Smaller labels for upcoming legs. Active leg remains red and larger.
-    const turns=plan.turns||[];
-    for(const turn of turns){
-      const html=`<div class="futureTackLabel"><b>${turn.label}</b><span>${turn.course}°</span></div>`;
-      const marker=L.marker([turn.lat,turn.lon],{icon:L.divIcon({html,iconSize:[38,24],iconAnchor:[19,12],className:'tackIcon'}),interactive:false}).addTo(map);
-      futureTacticalOverlays.push(marker);
-    }
-
-    if(route.length>=2){
-      const a=route[0], b=route[1];
-      const c=Math.round(bearing(a[0],a[1],b[0],b[1]));
-      const d=distance(a[0],a[1],b[0],b[1]);
-      const mid=dest(a[0],a[1],c,Math.min(d*.44,360));
-      const html=`<div class="futureLegLabel"><b>Legg ${i+1}</b><span>${c}°</span></div>`;
-      const marker=L.marker([mid.lat,mid.lon],{icon:L.divIcon({html,iconSize:[58,26],iconAnchor:[29,13],className:'tackIcon'}),interactive:false}).addTo(map);
-      futureTacticalOverlays.push(marker);
-    }
+    const a=base[0], b=base[Math.min(1,base.length-1)];
+    const c=Math.round(bearing(a[0],a[1],b[0],b[1]));
+    const d=distance(a[0],a[1],b[0],b[1]);
+    const mid=dest(a[0],a[1],c,Math.min(d*.44,360));
+    const html=`<div class="futureLegLabel"><b>Legg ${i+1}</b><span>${c}° plan</span></div>`;
+    const marker=L.marker([mid.lat,mid.lon],{icon:L.divIcon({html,iconSize:[68,26],iconAnchor:[34,13],className:'tackIcon'}),interactive:false}).addTo(map);
+    futureTacticalOverlays.push(marker);
   }
 }
 
@@ -1771,7 +1736,9 @@ function update(){
     ? `Kryss aktiv: seil ${Math.round(nextBrg)}° ca. ${Math.round(nextDst)} m til neste SLÅ-punkt.`
     : lastTacticalPlan.mode==='lens'
       ? `Gybe/lens aktiv: seil ${Math.round(nextBrg)}° ca. ${Math.round(nextDst)} m til neste GYB-punkt.`
-      : `Direkte anbefalt kurs ${Math.round(rec.course)}°.`;
+      : lastTacticalPlan.mode==='safe'
+        ? `Følg trygg sjørute mot ${t.name}. Ingen SLÅ/GYB legges inn før fri aktiv legg.`
+        : `Direkte anbefalt kurs ${Math.round(rec.course)}°. Ingen SLÅ/GYB anbefalt nå.`;
 
   const polarNote=rec.boatSpeed!=null && rec.twa!=null
     ? `Polar ${rec.polar.label}: ${rec.boatSpeed.toFixed(1)} kn ved TWA ${Math.round(rec.twa)}° / TWS ${Math.round(rec.twsKt)} kn.`
@@ -1873,15 +1840,13 @@ function simWeatherFallback(){
 }
 
 function setBoatStart(lat,lon,keep=false){
-  // Manuelt valgt startpunkt skal være stabilt. Derfor stoppes både GPS-watch
-  // og demo-loop før posisjonen settes; ellers kan neste GPS/demosteg flytte
-  // båten tilbake til gammel posisjon.
+  // v28: a manually chosen boat/start position is authoritative.  Do not snap
+  // it to nearestWater(); the coarse internal mask can be wrong near islands,
+  // shallows and chart edges, which made the boat appear to move away from the
+  // point the user selected.
   stopLiveAndDemoForManualStart();
-
-  // Snap bare hvis punktet faktisk ligger på land. Hvis punktet er på vann,
-  // beholdes valgt posisjon uendret.
-  const w=nearestWater(lat,lon);
-  pos={lat:w.lat,lon:w.lon,sog:ms(+$('simSpeed').value||5.5),cog:+$('simHeading').value||210};
+  setManualBoatStartLock(lat,lon);
+  pos={lat,lon,sog:ms(+$('simSpeed').value||5.5),cog:+$('simHeading').value||210};
   resetBoatNav();
   pendingBoatStart=false;
   const setBtn=$('setBoatStart');
@@ -1899,6 +1864,7 @@ function setBoatStart(lat,lon,keep=false){
   fetchData(pos.lat,pos.lon).finally(()=>{update()});
   map.setView([pos.lat,pos.lon],Math.max(map.getZoom(),14));
 }
+
 
 function advanceBoatOnCourse(dtSec){
   if(!pos)return;
@@ -1966,11 +1932,11 @@ function applyMapPointChoice(latlng,choice,name=''){
   const finalName=name.trim() || (choice==='1'?'Start':choice==='3'?'Mål':`Bøye ${marks.length+1}`);
   if(choice==='1') {
     // Erstatt eksisterende start i stedet for å legge inn flere Start-punkter.
-    // Båten flyttes samtidig til dette startpunktet.
+    // Båten flyttes samtidig til eksakt valgt startpunkt.
     replaceCourseStartMark(latlng.lat,latlng.lng,finalName);
     stopLiveAndDemoForManualStart();
-    const w=nearestWater(latlng.lat,latlng.lng);
-    pos={lat:w.lat,lon:w.lon,sog:ms(+$('simSpeed').value||5.5),cog:+$('simHeading').value||210};
+    setManualBoatStartLock(latlng.lat,latlng.lng);
+    pos={lat:latlng.lat,lon:latlng.lng,sog:ms(+$('simSpeed').value||5.5),cog:+$('simHeading').value||210};
     resetBoatNav();
     fetchData(pos.lat,pos.lon).catch(()=>{});
   } else {
@@ -2109,16 +2075,10 @@ $('sim').onclick=async()=>{
   stopGpsTracking();
   simOn=!simOn;$('sim').textContent=simOn?'Stopp demo':'Start demo-sim';
   if(!simOn){clearInterval(simTimer);return;}
-  if(marks.length){
-    // Demo skal alltid starte fra løypas Start-punkt når løype finnes.
-    pos={lat:marks[0].lat,lon:marks[0].lon,sog:ms(+$('simSpeed').value||5.5),cog:+$('simHeading').value||210};
-    active=marks.length>1?1:0;
-    resetBoatNav();
-  } else {
-    pos=pos||nearestWater(59.2025,10.767);
-    pos.sog=ms(+$('simSpeed').value||5.5);pos.cog=+$('simHeading').value||210;
-    resetBoatNav();
-  }
+  const start=demoStartPosition();
+  pos={lat:start.lat,lon:start.lon,sog:ms(+$('simSpeed').value||5.5),cog:+$('simHeading').value||210};
+  if(marks.length) active=marks.length>1?1:0;
+  resetBoatNav();
   fetchData(pos.lat,pos.lon).finally(()=>update());
   save();
   startSimLoop();
@@ -2204,6 +2164,7 @@ $('setBoatStart').onclick=()=>{
 };
 $('sample').onclick=()=>{
   stopLiveAndDemoForManualStart();
+  clearManualBoatStartLock();
   marks=[{name:'Start',lat:59.2015,lon:10.7663,type:'start'},{name:'Bøye 2',lat:59.2165,lon:10.7705,type:'runding'},{name:'Bunn',lat:59.193,lon:10.792,type:'runding'},{name:'Mål',lat:59.2017,lon:10.767,type:'mål'}];
   active=0;
   pos={lat:marks[0].lat,lon:marks[0].lon,sog:ms(+$('simSpeed').value||5.5),cog:+$('simHeading').value||210};
@@ -2353,7 +2314,7 @@ async function exportNavionicsGpx(){
   alert('GPX-fil lastes ned. På mobil kan du åpne filen og velge Navionics Boating for import.');
 }
 
-$('clear').onclick=()=>{if(confirm('Tøm?')){marks=[];active=0;line={pin:null,boat:null};resetBoatNav();save();render();update();}};
+$('clear').onclick=()=>{if(confirm('Tøm?')){marks=[];active=0;line={pin:null,boat:null};clearManualBoatStartLock();resetBoatNav();save();render();update();}};
 $('useHere').onclick=()=>{if(!pos)return alert('Start GPS eller demo først');marks.push({name:`Merke ${marks.length+1}`,lat:pos.lat,lon:pos.lon,type:'merke'});resetBoatNav();save();render();update();};
 $('setPin').onclick=()=>{if(!pos)return alert('Start GPS eller demo først');line.pin={lat:pos.lat,lon:pos.lon};save();render();};
 $('setBoat').onclick=()=>{if(!pos)return alert('Start GPS eller demo først');line.boat={lat:pos.lat,lon:pos.lon};save();render();};
